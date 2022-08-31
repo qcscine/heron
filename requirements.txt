@@ -1,0 +1,14 @@
+PySide2==5.15.2.1
+shiboken2==5.15.2.1
+vtk==9.0.1
+numpy==1.19.5
+silx==0.15.2
+python-box==5.3.0
+matplotlib==3.3.4
+qt-material==2.7
+scipy==1.5.4
+networkx>=2.5.1
+dataclasses==0.6
+scine_utilities>=6.0.0
+scine_sparrow>=3.1.0
+scine_database>=1.1.0

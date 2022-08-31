@@ -1,0 +1,21 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<resources>
+<color name="primaryColor">#08407E</color> <!-- Interactive text-->
+<color name="primaryLightColor">#215CAF</color> <!-- None-->
+<color name="secondaryColor">#A6BEDF</color> <!-- Background color settings options-->
+<color name="secondaryLightColor">#ffffff</color> <!-- Background open / save upon when not chosen-->
+<color name="secondaryDarkColor">#D3DEEF</color> <!--Background application (all except graph / molecule viewer) -->
+<color name="primaryTextColor">#000000</color> <!-- None-->
+<color name="secondaryTextColor">#000000</color> <!-- Unclickable text-->
+<color name="primaryLineColor">#214478</color> <!-- Primary line color-->
+<color name="secondaryLineColor">#7D9CCB</color> <!-- Secondary line color-->
+<color name="compoundColor">#8dd35f</color>
+<color name="reactionColor">#ff9955</color>
+<color name="associationColor">#d4aa00</color>
+<color name="flaskColor">#5f8dd3</color>
+<color name="structureColor">#154734</color>
+<color name="elementaryStepColor">#a11f05</color>
+<color name="borderColor">#000000</color>
+<color name="edgeColor">#000000</color>
+<color name="highlightColor">#d40000</color>
+</resources>

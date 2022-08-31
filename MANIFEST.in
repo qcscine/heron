@@ -1,0 +1,12 @@
+include LICENSE
+include README.rst
+include CHANGELOG.rst
+include requirements.txt
+
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+
+include scine_heron/_version.py
+
+# If including data files in the package, add them like:
+include scine_heron/resources

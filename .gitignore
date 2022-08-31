@@ -1,0 +1,56 @@
+**/__pycache__
+openhaptics/build/
+openhaptics/scine_heron_haptic.*
+.hypothesis
+launch.sh
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+venv/
+*.egg-info/
+*.egg
+*whl
+
+# Unit test / coverage reports
+.coverage
+.coverage.*
+.cache
+coverage.xml
+pytest_report.xml
+htmlcov
+
+# Sphinx documentation
+docs/build/
+docs/source/generated/
+
+# pytest
+.pytest_cache/
+
+# Editor files
+#mac
+.DS_Store
+*~
+
+#vim
+*.swp
+*.swo
+
+#pycharm
+.idea/
+
+#VSCode
+.vscode/
+
+#conda
+spec-file.txt
+
+mongo*
+Wired*
+*.wt
+*.tar.gz
+*.bson

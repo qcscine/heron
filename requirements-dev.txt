@@ -1,0 +1,10 @@
+-r requirements.txt
+pytest
+coverage
+pylint==2.14.5
+pylint-exit
+autopep8
+flake8
+hypothesis
+mypy
+types-dataclasses
