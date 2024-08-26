@@ -1,0 +1,2 @@
+-r requirements.txt
+scine_xtb_wrapper==3.0.1

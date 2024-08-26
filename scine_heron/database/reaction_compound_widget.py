@@ -1,68 +1,67 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
-from typing import Dict, Optional, Any, List, Union, Tuple
-from json import dumps
-import json
-
-import numpy as np
-
-import scine_database as db
-import scine_utilities as utils
-
-from scine_heron.utilities import datetime_to_query
-from scine_heron.database.graphics_items import Compound, Reaction
-from scine_heron.database.energy_query_functions import check_barrier_height, get_energy_change
-from scine_heron.database.concentration_query_functions import query_concentration, query_reaction_flux
-from scine_heron.database.reaction_compound_view import ReactionAndCompoundView, ReactionAndCompoundViewSettings
-from scine_heron.database.compound_and_flasks_helper import get_compound_or_flask
-from scine_heron import find_main_window
-from datetime import datetime
-
+from PySide2.QtCore import Qt, QTimer, QPoint, QThreadPool, SignalInstance, QDate  # QTimeLine
+from PySide2.QtGui import QPainterPath, QGuiApplication
 from PySide2.QtWidgets import (
     QWidget,
     QPushButton,
     QLabel,
     QDateTimeEdit,
     QLineEdit,
-    QGraphicsItemAnimation,
+    QGraphicsPathItem,
     QVBoxLayout,
     QHBoxLayout,
     QSplitter,
-    QGraphicsItem,
     QCheckBox,
     QScrollArea
 )
-from PySide2.QtGui import QPainterPath, QGuiApplication
-from PySide2.QtCore import Qt, QTimer, QPoint, QTimeLine, QDate
+from datetime import datetime
+from scine_heron import find_main_window
+from scine_heron.settings.class_options_widget import ModelOptionsWidget
+from scine_heron.database.reaction_compound_view import ReactionAndCompoundView, ReactionAndCompoundViewSettings
+from scine_heron.database.graphics_items import Compound, Reaction
+from scine_heron.containers.layouts import VerticalLayout, HorizontalLayout
+from scine_heron.containers.buttons import TextPushButton
+from scine_heron.io.file_browser_popup import get_load_file_name
+from scine_heron.multithread import Worker
+from scine_chemoton.gears.pathfinder import Pathfinder as pf
+
+from scine_database.concentration_query_functions import (
+    query_concentration,
+    query_reaction_flux
+)
+from scine_database.energy_query_functions import (
+    get_energy_change,
+    get_barriers_for_elementary_step_by_type,
+)
+import scine_database as db
+import copy
+import networkx as nx
+import numpy as np
+from json import dumps
+from typing import Dict, Optional, Any, List, Union, Tuple, TYPE_CHECKING
 
 
-def reaction_is_parallel(reaction: db.Reaction, step: db.ElementaryStep, structures: db.Collection):
-    reaction_lhs = reaction.get_reactants(db.Side.LHS)[0]
-    step_lhs = step.get_reactants(db.Side.LHS)[0]
-    step_lhs_aggregate_ids = [db.Structure(s_id, structures).get_aggregate() for s_id in step_lhs]
-    if len(step_lhs_aggregate_ids) == len(reaction_lhs):
-        for a_id in step_lhs_aggregate_ids:
-            if a_id not in reaction_lhs:
-                return False
-        return True
-    return False
-
-
-def reaction_is_outgoing(reaction: db.Reaction, centroid_id: db.ID):
-    return centroid_id in reaction.get_reactants(db.Side.LHS)[0]
+if TYPE_CHECKING:
+    Slot = Any
+else:
+    from PySide2.QtCore import Slot
 
 
 class AdvancedSettingsWidget(QWidget):
-    def __init__(self, network, db_manager, parent=None):
+    def __init__(self, network, db_manager, parent=None) -> None:
         super(AdvancedSettingsWidget, self).__init__(parent)
-        self._max_barrier = 265.5
-        self._min_barrier = - 100.0
+        self._max_barrier = 2650.5
+        self._min_barrier = - 1000.0
         self._always_show_barrierless = True
-        self._model = db.Model("DFT", "", "")
+        self._model: Optional[db.Model] = None
+        self._model_button = QPushButton("Set Model")
+        self._model_button.clicked.connect(self._call_model_dialog)  # pylint: disable=no-member
+        self._enforce_structure_model = False
         self._scale_with_concentrations = False
         self._min_flux = 1e-5
         self._network = network
@@ -71,15 +70,16 @@ class AdvancedSettingsWidget(QWidget):
         self.__layout = QVBoxLayout()
 
         self._set_up_barrier_widgets(self.__layout)
-        self.current_method_family_text, self.current_method_text, self.current_basis_set_text,\
-            self.current_solvation_text, self.current_solvent_text = self._set_up_electronic_structure_model_widgets(
-                self.__layout)
-        self._set_up_concentration_widgets(self.__layout)
-        self.setLayout(self.__layout)
 
-    def reset_compounds(self):
-        if self._network:
-            self._network.reset_compounds = True
+        self.__layout.addWidget(self._model_button)
+
+        self.enforce_structure_model_cbox = QCheckBox("Enforce Structure Model", parent=self)
+        self.enforce_structure_model_cbox.setChecked(self._enforce_structure_model)
+        self.__layout.addWidget(self.enforce_structure_model_cbox)
+
+        self._set_up_concentration_widgets(self.__layout)
+
+        self.setLayout(self.__layout)
 
     def get_max_barrier(self) -> float:
         return float(self.current_max_barrier_text.text())
@@ -94,10 +94,26 @@ class AdvancedSettingsWidget(QWidget):
         return float(self.current_min_flux_text.text())
 
     def get_model(self) -> db.Model:
+        if self._model is None:
+            self._query_for_general_model()
+        if self._model is None:
+            self._call_model_dialog()
+        assert self._model is not None
         return self._model
 
     def scale_with_concentrations(self):
         return self.concentration_scaling_cbox.isChecked()
+
+    def enforce_structure_model(self):
+        return self.enforce_structure_model_cbox.isChecked()
+
+    def _call_model_dialog(self):
+        dialog = ModelOptionsWidget(self, self._model)
+        # Note: Ideally, the option widget should still be movable
+        dialog.exec_()
+        # Overwrite model from dialog after exec if the initial is None
+        if self._model is None:
+            self._model = copy.deepcopy(dialog._options)
 
     def _set_up_barrier_widgets(self, layout):
         qhbox_labels = QHBoxLayout()
@@ -129,9 +145,7 @@ class AdvancedSettingsWidget(QWidget):
     def _set_up_concentration_widgets(self, layout):
         self.concentration_scaling_cbox = QCheckBox("Truncate by Concentration")
         self.concentration_scaling_cbox.setChecked(self._scale_with_concentrations)
-        self.concentration_scaling_cbox.toggled.connect(self.reset_compounds)  # pylint: disable=no-member
         layout.addWidget(self.concentration_scaling_cbox)
-
         self.current_min_flux_label = QLabel(self)
         self.current_min_flux_label.resize(280, 40)
         self.current_min_flux_label.setText("Min. Concentration Flux")
@@ -141,105 +155,35 @@ class AdvancedSettingsWidget(QWidget):
         self.current_min_flux_text.setText(str(self._min_flux))
         layout.addWidget(self.current_min_flux_text)
 
-    def _set_up_electronic_structure_model_widgets(self, layout) -> Tuple[QWidget, QWidget, QWidget, QWidget, QWidget]:
-        """
-        Add the widgets for the electronic structure definition to the layout.
-        """
-        # Header
-        current_model_label = QLabel(self)
-        current_model_label.resize(280, 40)
-        current_model_label.setText("Electronic Structure Model")
-        # First line of boxes: Method family, method, and basis set
-        layout.addWidget(current_model_label)
-        current_method_family_label = QLabel(self)
-        current_method_family_label.resize(70, 40)
-        current_method_family_label.setText("Family")
-        current_method_label = QLabel(self)
-        current_method_label.resize(70, 40)
-        current_method_label.setText("Method")
-        current_basis_set_label = QLabel(self)
-        current_basis_set_label.resize(70, 40)
-        current_basis_set_label.setText("Basis Set")
-        hbox1Layout = QHBoxLayout()
-        hbox1Layout.addWidget(current_method_family_label)
-        hbox1Layout.addWidget(current_method_label)
-        hbox1Layout.addWidget(current_basis_set_label)
-        layout.addLayout(hbox1Layout)
-
-        current_method_family_text = QLineEdit(self)
-        current_method_family_text.resize(70, 40)
-        current_method_family_text.setText("None")
-        current_method_text = QLineEdit(self)
-        current_method_text.resize(70, 40)
-        current_method_text.setText("")
-        current_basis_set_text = QLineEdit(self)
-        current_basis_set_text.resize(70, 40)
-        current_basis_set_text.setText("")
-        hbox2Layout = QHBoxLayout()
-        hbox2Layout.addWidget(current_method_family_text)
-        hbox2Layout.addWidget(current_method_text)
-        hbox2Layout.addWidget(current_basis_set_text)
-        layout.addLayout(hbox2Layout)
-
-        # Second line of boxes: Solvation and solvent
-        current_solvation_label = QLabel(self)
-        current_solvation_label.resize(70, 40)
-        current_solvation_label.setText("Solvation")
-        current_solvent_label = QLabel(self)
-        current_solvent_label.resize(70, 40)
-        current_solvent_label.setText("Solvent")
-        hbox3Layout = QHBoxLayout()
-        hbox3Layout.addWidget(current_solvation_label)
-        hbox3Layout.addWidget(current_solvent_label)
-        layout.addLayout(hbox3Layout)
-
-        current_solvation_text = QLineEdit(self)
-        current_solvation_text.resize(70, 40)
-        current_solvation_text.setText("")
-        current_solvent_text = QLineEdit(self)
-        current_solvent_text.resize(70, 40)
-        current_solvent_text.setText("")
-        hbox4Layout = QHBoxLayout()
-        hbox4Layout.addWidget(current_solvation_text)
-        hbox4Layout.addWidget(current_solvent_text)
-        layout.addLayout(hbox4Layout)
-        return current_method_family_text, current_method_text, current_basis_set_text, current_solvation_text,\
-            current_solvent_text
+    def _query_for_general_model(self):
+        selection = {
+            "$and": [
+                {"status": {"$eq": "complete"}},
+                {"results.elementary_steps.0": {"$exists": True}},
+            ]
+        }
+        calculation = (
+            self._db_manager.get_collection("calculations").get_one_calculation(dumps(selection))
+        )
+        if calculation is None:
+            selection = {"label": {"$in": ["user_optimized", "user_surface_optimized"]}}
+            structure = self._db_manager.get_collection("structures").get_one_structure(dumps(selection))
+            if structure is None:
+                return
+            model = structure.model
+        else:
+            model = calculation.model
+        # # # Generalize initial model
+        for model_attribute in ["electronic_temperature", "pressure", "spin_mode", "temperature", "version"]:
+            setattr(model, model_attribute, "any")
+        self._model = model
 
     def update_settings(self):
         """
         Read the model definition and maximum barrier from the input boxes. If "None" is given in the method family
         input box. Get some model from the database.
         """
-        requested_method_family = self.current_method_family_text.text()
-        if "None" in requested_method_family:
-            selection = {
-                "$and": [
-                    {"status": {"$eq": "complete"}},
-                    {"results.elementary_steps.0": {"$exists": True}},
-                ]
-            }
-            calculation = (
-                self._db_manager.get_collection("calculations").get_one_calculation(dumps(selection))
-            )
-            if calculation is None:
-                selection = {"label": "user_optimized"}
-                structure = self._db_manager.get_collection("structures").get_one_structure(dumps(selection))
-                if structure is None:
-                    return
-                model = structure.model
-            else:
-                model = calculation.model
-            self._model = model
-            self.update_electronic_structure_model_text(model)
-        else:
-            requested_method = self.current_method_text.text()
-            requested_basis_set = self.current_basis_set_text.text()
-            self._model = db.Model(
-                requested_method_family, requested_method, requested_basis_set
-            )
-            self._model.solvent = self.current_solvent_text.text()
-            self._model.solvation = self.current_solvation_text.text()
+        self._enforce_structure_model = self.enforce_structure_model()
         # Maximum/Minimum barrier and flux.
         self._max_barrier = self.get_max_barrier()
         self._min_barrier = self.get_min_barrier()
@@ -247,20 +191,9 @@ class AdvancedSettingsWidget(QWidget):
         self._min_flux = self.get_min_flux()
         self._scale_with_concentrations = self.scale_with_concentrations()
 
-    def update_electronic_structure_model_text(self, model: db.Model) -> None:
-        """
-        Update the text boxes for the electronic structure model with the settings given in the model.
-        """
-        self.current_method_family_text.setText(model.method_family)
-        self.current_method_text.setText(model.method)
-        self.current_basis_set_text.setText(model.basis_set)
-        self.current_solvation_text.setText(model.solvation)
-        self.current_solvent_text.setText(model.solvent)
-
 
 class CRNetwork(ReactionAndCompoundView):
     def __init__(self, parent: QWidget, db_manager: db.Manager) -> None:
-        import math
         super().__init__(parent=parent)
         self.setMouseTracking(True)
         self.setInteractive(True)
@@ -269,248 +202,194 @@ class CRNetwork(ReactionAndCompoundView):
 
         self.structure_of_compound = None
 
-        # Expand reactions in pop-up window
-        self.total_number_elementary_steps = None
-        self.total_number_compound_rhs: Optional[List[dict]] = None
-        self.total_number_compound_lhs: Optional[List[dict]] = None
-        self.select_item: dict = {}
+        self._graph: Union[nx.DiGraph, None] = None
+        self._graph_model = db.Model("any", "any", "any")
+        self._graph_with_structure_model = False
+        self._currently_plotting = False
+        self.new_network = False
+        # Cache of subgraphs with graph and positions
+        # NOTE: Don't know how memory intensive
+        self.subgraph_cache: Dict[str, Dict[str, Any]] = dict()
 
         # Add all data
         self.db_manager: db.Manager = db_manager
-        self.old_compounds: Dict[str, Compound] = {}
-        self.old_reactions: Dict[str, Reaction] = {}
         self.centroid_item: Optional[Compound] = None
         self.current_centroid_id: str = ""
-        self.animations: List[QGraphicsItemAnimation] = []
-        self.reaction_query: Dict[Any, Any] = {}
-        self.earliest_compound_creation: Optional[datetime] = None
-        self.__currently_updating: bool = False
         self.__history: List[str] = []
         self.__current_history_position: int = -1
-        self.__last_max_barrier: float = -math.inf
-        self.__last_min_barrier: float = -math.inf
-        self.__last_model: db.Model = db.Model('any', 'any', 'any')
-        self.reset_compounds: bool = False
 
-        self.__last_min_flux: Union[float, None] = None
-        self.__last_scale_with_concentrations: Union[bool, None] = None
-        self.__last_always_show_barrierless: Union[bool, None] = None
+        # db-info of selected compound
+        self._compound_collection = self.db_manager.get_collection("compounds")
+        self._reaction_collection = self.db_manager.get_collection("reactions")
+        self._flask_collection = self.db_manager.get_collection("flasks")
+        self._elementary_step_collection = self.db_manager.get_collection("elementary_steps")
+        self._property_collection = self.db_manager.get_collection("properties")
+        self._structure_collection = self.db_manager.get_collection("structures")
+
+    @staticmethod
+    def _print_progress(signal):
+
+        main_window = find_main_window()
+        if main_window is not None:
+            status_bar = main_window.get_status_bar()
+            if signal[0]:
+                status_bar.clear_message()
+                status_bar.update_status(signal[1], timer=None)
+            # When signal is false, error status
+            else:
+                status_bar.clear_message()
+                status_bar.update_error_status(signal[1], timer=5 * 1000)
+
+    @staticmethod
+    def trigger_thread_function(func, info_func, *args, **kwargs):
+        worker = Worker(func, *args, **kwargs)
+        worker.signals.running.connect(info_func)
+
+        pool = QThreadPool.globalInstance()
+        pool.start(worker)
 
     def focus_function(self, _, item: Union[Compound, Reaction]) -> None:
-        self.centroid_item = item
-        string = self.centroid_item.db_representation.id().string()
+        # Store current connected items
+        self.subgraph_cache[self.current_centroid_id]["focused_connected_items"] = self.focused_connected_items
+        self.subgraph_cache[self.current_centroid_id]["focused_connected_lines"] = self.focused_connected_lines
+        id_string = item.db_representation.id().string()
         assert self.settings
         cr_settings = self.settings
-        cr_settings.update_current_centroid_text(string)
+        cr_settings.update_current_centroid_text(id_string)
         cr_settings.advanced_settings_widget.update_settings()
-        self.update_network(cr_settings.advanced_settings_widget.get_max_barrier(),
-                            cr_settings.advanced_settings_widget.get_min_barrier(),
-                            cr_settings.advanced_settings_widget.always_show_barrierless(),
-                            cr_settings.advanced_settings_widget.get_model(),
-                            cr_settings.advanced_settings_widget.scale_with_concentrations(),
-                            cr_settings.advanced_settings_widget.get_min_flux())
-
-    def __animate_move(self, item: QGraphicsItem, x: float, y: float) -> None:
-        move = QGraphicsItemAnimation(self)
-        move.setItem(item)
-        move.setTimeLine(self.timer)
-        current_center = item.boundingRect().center().toPoint()
-        new_center = QPoint(int(x), int(y))
-        movement_dynamic = new_center - current_center
-        for i in range(self.frames):
-            move.setScaleAt(i / self.frames, 1, 1)
-            move.setPosAt(i / self.frames, movement_dynamic)
-            # TODO This make the points jump at the end of the fade in, but it should be smooth
-            #  This should could be debugged, the line above make the jump happen at the start
-            # move.setPosAt(i / self.frames, ((i+1) / self.frames) * movement_dynamic)
-        self.animations.append(move)
-
-    def __animate_fade_out(self, item: QGraphicsItem) -> None:
-        fade_out = QGraphicsItemAnimation(self)
-        fade_out.setItem(item)
-        fade_out.setTimeLine(self.timer)
-        current_pos = item.pos().toPoint()
-        current_center = item.boundingRect().center().toPoint()
-        movement_dynamic = current_center - current_pos
-        for i in range(self.frames):
-            fade_out.setScaleAt(
-                i / self.frames, 1 - (i + 1) / self.frames, 1 - (i + 1) / self.frames
-            )
-            fade_out.setPosAt(
-                i / self.frames,
-                (current_pos + movement_dynamic) * ((i + 1) / self.frames),
-            )
-        self.animations.append(fade_out)
-
-    def __animate_fade_in(self, item: QGraphicsItem) -> None:
-        fade_in = QGraphicsItemAnimation(self)
-        fade_in.setItem(item)
-        fade_in.setTimeLine(self.timer)
-        current_pos = item.pos().toPoint()
-        current_center = item.boundingRect().center().toPoint()
-        movement_dynamic = current_center - current_pos
-        for i in range(self.frames):
-            fade_in.setScaleAt(
-                i / self.frames, (i + 1) / self.frames, (i + 1) / self.frames
-            )
-            fade_in.setPosAt(
-                i / self.frames,
-                (current_pos + movement_dynamic) * (1 - (i + 1) / self.frames),
-            )
-        fade_in.setStep(0.0)
-        self.animations.append(fade_in)
+        self.trigger_thread_function(
+            self.update_network,
+            self._print_progress,
+            cr_settings.advanced_settings_widget.get_model(),
+            cr_settings.advanced_settings_widget.enforce_structure_model(),
+            trigger_plot=True,
+            requested_centroid=id_string,
+            triggered_from_focus_click=True,
+        )
 
     def redo_move(self):
         if (self.__current_history_position + 2) > len(self.__history) or self.__current_history_position < 0:
             return
         self.__current_history_position += 1
         centroid_id = self.__history[self.__current_history_position]
-        self.update_network(self.__last_max_barrier, self.__last_min_barrier,
-                            self.__last_always_show_barrierless, self.__last_model,
-                            self.__last_scale_with_concentrations, self.__last_min_flux, centroid_id, False)
+        self.update_network(self._graph_model, self._graph_with_structure_model,
+                            trigger_plot=True,
+                            requested_centroid=centroid_id,
+                            track_update=False)
+        # Update text field
+        self.settings.update_current_centroid_text(
+            str(self.current_centroid_id)
+        )
 
     def undo_move(self):
         if self.__current_history_position > len(self.__history) or self.__current_history_position < 1:
             return
         self.__current_history_position -= 1
         centroid_id = self.__history[self.__current_history_position]
-        self.update_network(self.__last_max_barrier, self.__last_min_barrier,
-                            self.__last_always_show_barrierless, self.__last_model,
-                            self.__last_scale_with_concentrations, self.__last_min_flux, centroid_id, False)
+        self.update_network(self._graph_model, self._graph_with_structure_model,
+                            trigger_plot=True,
+                            requested_centroid=centroid_id,
+                            track_update=False)
+        # Update text field
+        self.settings.update_current_centroid_text(
+            str(self.current_centroid_id)
+        )
+
+    def load_graph(self):
+        pathfinder = pf(self.db_manager)
+        graph_filenname = get_load_file_name(self, "graph", ['json'])
+        if graph_filenname is None:
+            return
+        # Load new graph
+        pathfinder.load_graph(graph_filenname)
+        self._graph = copy.deepcopy(pathfinder.graph_handler.graph)
+        self.settings.advanced_settings_widget._call_model_dialog()
+        self._graph_model = self.settings.advanced_settings_widget.get_model()
+        # NOTE: Assume structure model for loaded graph
+        self.settings.advanced_settings_widget._enforce_structure_model = True
+        self.settings.advanced_settings_widget.enforce_structure_model_cbox.setChecked(True)
+        self._graph_with_structure_model = True
+
+    def reset_graph(self):
+        self._graph = None
+        self._graph_model = db.Model("any", "any", "any")
+
+    def reset_subgraph_cache(self):
+        self.subgraph_cache = {}
+
+    def remove_all_items(self):
+        # # # Remove old items from current scene
+        items = self.scene_object.items()
+        for item in items:
+            self.scene_object.removeItem(item)
+
+    def plot_network(self):
+        if self._currently_plotting:
+            return
+        self._currently_plotting = True
+        self.remove_all_items()
+        # # # Add new items
+        for k in self.line_items.keys():
+            self.scene_object.addItem(self.line_items[k])
+        for c in self.compounds.keys():
+            self.scene_object.addItem(self.compounds[c][0])
+        for r in self.reactions.keys():
+            self.scene_object.addItem(self.reactions[r][0])
+        self.__center_view()
+
+        self._currently_plotting = False
 
     def update_network(
         self,
-        max_barrier: float,
-        min_barrier: float,
-        always_show_barrierless: bool,
         model: db.Model,
-        scale_with_concentrations,
-        min_flux: float,
+        enforce_structure_model: bool,
+        progress_callback: Optional[SignalInstance] = None,
+        trigger_plot=False,
         requested_centroid: Optional[str] = None,
         track_update: bool = True,
+        triggered_from_focus_click: bool = False
     ) -> None:
+        if progress_callback is not None:
+            progress_callback.emit((True, "Status:" + 4 * " " + "Loading Network"))
+        # If graph not present, build basic graph
+        if self._graph is None or \
+           model != self._graph_model or \
+           enforce_structure_model != self._graph_with_structure_model:
+            # NOTE: possible to introduce subgraph cache per model
+            self.reset_subgraph_cache()
+            # NOTE: Add loading screen
+            self.__build_graph()
+            assert self._graph
+            if len(self._graph.nodes()) == 0:
+                assert progress_callback
+                progress_callback.emit((False, 'Status:' + 4 * " " + "No graph available!"))
+                return
 
-        if self.__currently_updating:
+            assert self._graph
+
+        if requested_centroid is None:
+            tmp_compound = self._compound_collection.get_one_compound(dumps({}))
+            if tmp_compound:
+                requested_centroid = tmp_compound.id().string()
+            else:
+                assert progress_callback
+                progress_callback.emit((False, 'Status:' + 4 * " " + "No compounds available!"))
+                return
+
+        # Check that requested centroid is in graph
+        if requested_centroid not in self._graph.nodes():
+            assert progress_callback
+            progress_callback.emit((False, 'Status:' + 4 * " " + "Centroid not available!"))
             return
-        self.__currently_updating = True
-        # Create singular timer for all added animated items
-        #  Segfaults if done in the __init__ function
-        self.timer = QTimeLine(1000)  # pylint: disable=attribute-defined-outside-init
-        self.frames = 40  # pylint: disable=attribute-defined-outside-init
-        self.timer.setFrameRange(0, self.frames)
-
-        # Better network view
-        reaction_multiple_compounds_index: List[Any] = []
-        list_of_reactions: List[Any] = []
-        list_of_angles: List[Any] = []
-        reaction_cache_sorted: List[Any] = []
-        compound_pairs_in_reaction: List[Any] = []
-
-        if self.__last_model and self.__last_min_flux and self.__last_scale_with_concentrations\
-                and self.__last_always_show_barrierless:
-            if model != self.__last_model or abs(self.__last_max_barrier - max_barrier) > 1e-9 \
-                    or abs(self.__last_min_barrier - min_barrier) > 1e-9\
-                    or self.__last_scale_with_concentrations != scale_with_concentrations \
-                    or self.__last_always_show_barrierless != always_show_barrierless \
-                    or abs(self.__last_min_flux - min_flux) > 1e-9:
-                # delete stuff
-                for c_str_id in self.compounds:
-                    self.__animate_fade_out(self.compounds[c_str_id][0])
-                for r_str_id in self.reactions:
-                    self.__animate_fade_out(self.reactions[r_str_id][0])
-                self.compounds = dict()
-                self.reactions = dict()
-
-        self.__last_max_barrier = max_barrier
-        self.__last_min_barrier = min_barrier
-        self.__last_always_show_barrierless = always_show_barrierless
-        self.__last_model = model
-        self.__last_min_flux = min_flux
-        self.__last_scale_with_concentrations = scale_with_concentrations
-
-        for k in self.compounds:
-            self.old_compounds[k] = self.compounds[k][0]
-        for k in self.reactions:
-            self.old_reactions[k] = self.reactions[k][0]
-        # Instantly remove all lines
-        for k in self.line_items:
-            self.scene_object.removeItem(self.line_items[k])
-
-        structure_collection = self.db_manager.get_collection("structures")
-        reaction_collection = self.db_manager.get_collection("reactions")
-        compound_collection = self.db_manager.get_collection("compounds")
-        flask_collection = self.db_manager.get_collection("flasks")
-        property_collection = self.db_manager.get_collection("properties")
+        else:
+            self.current_centroid_id = requested_centroid
 
         # Reset storage
         self.compounds = {}
         self.reactions = {}
-        self.animations = []
-        if self.centroid_item is None or requested_centroid is not None:
-            if requested_centroid is None:
-                tmp_compound = compound_collection.get_one_compound(dumps({}))
-                if tmp_compound:
-                    a_id = tmp_compound.id()
-                else:
-                    print("No compounds available!")
-                    return
-            else:
-                a_id = db.ID(requested_centroid)
-
-            centroid: Union[db.Compound, db.Flask] = db.Compound(a_id, compound_collection)
-            if not centroid.exists():
-                centroid = db.Flask(a_id, flask_collection)
-            if not centroid.exists():
-                centroid = self.centroid_item  # type: ignore
-            if not centroid.exists():
-                tmp_compound = compound_collection.get_one_compound(dumps({}))
-                if tmp_compound:
-                    a_id = tmp_compound.id()
-                    centroid = db.Compound(a_id, compound_collection)
-                else:
-                    print("No compounds available!")
-                    return
-
-            concentration = None
-            s = db.Structure(centroid.get_centroid(), structure_collection)
-            if scale_with_concentrations:
-                concentration = query_concentration("max_concentration", s, property_collection)
-            self.centroid_item = Compound(
-                0, 0, concentration=concentration
-            )
-            self.centroid_item.db_representation = centroid
-            self.centroid_item.structure = s.get_atoms()
-            if isinstance(centroid, db.Compound):
-                self.centroid_item.set_brush(self.compound_brush)
-                self.centroid_item.setPen(self.compound_pen)
-            else:
-                self.centroid_item.set_brush(self.flask_brush)
-                self.centroid_item.setPen(self.compound_pen)
-            self.__bind_functions_to_object(self.centroid_item, True)
-            cid_string = centroid.id().string()
-            self.add_to_compound_list(self.centroid_item)
-            self.scene_object.addItem(self.centroid_item)
-        else:
-            centroid = self.centroid_item.db_representation
-
-            if centroid.id().string() in self.old_compounds:
-                del self.old_compounds[centroid.id().string()]
-            # Reset color to be sure
-            self.reset_item_colors()
-            self.focused_item_db_id = None
-            self.focused_item = None
-            self.centroid_item.x_coord = 0
-            self.centroid_item.y_coord = 0
-            self.__animate_move(self.centroid_item, 0, 0)
-            cid_string = centroid.id().string()
-            self.add_to_compound_list(self.centroid_item)
-        self.current_centroid_id = cid_string
+        self.line_items = {}
 
         if track_update:
-            self.__last_max_barrier = max_barrier
-            self.__last_min_barrier = min_barrier
-            self.__last_always_show_barrierless = always_show_barrierless
-            self.__last_model = model
             if len(self.__history) == 0:
                 self.__current_history_position += 1
                 self.__history = self.__history[0:(self.__current_history_position)]
@@ -520,525 +399,447 @@ class CRNetwork(ReactionAndCompoundView):
                 self.__history = self.__history[0:self.__current_history_position]
                 self.__history.append(self.current_centroid_id)
 
-        centroid_id_string = self.centroid_item.db_representation.id().string()
-        selection = {
-            "$and": [{
-                "$or": [
-                    {"lhs.id": {"$oid": centroid_id_string}},
-                    {"rhs.id": {"$oid": centroid_id_string}},
-                ]},
-                self.reaction_query
-            ]
-        }
+        # # # Start building subgraph
+        centroid_sub_graph, reaction_nodes, aggregate_nodes = self.__get_subgraph_of_centroid(
+            self.current_centroid_id)
+        # NOTE: Start building subgraph of all aggregate nodes as subthread (process?),
+        #       just list of nodes required as input
 
-        reaction_cache = []
-        elementary_step_cache = []
-        reaction_flux = []
-        for r in reaction_collection.iterate_reactions(dumps(selection)):
-            r.link(reaction_collection)
+        dist_value = 0.2
+        max_dimensions = (420, 420)
+        if len(centroid_sub_graph.nodes) > 400:
+            dist_value = 0.1
+            max_dimensions = (int(1000 * 1.5), 1000)
 
-            if scale_with_concentrations:
-                flux = query_reaction_flux("_reaction_edge_flux", r, compound_collection, flask_collection,
-                                           structure_collection, property_collection)
-                if flux < min_flux:
-                    continue
-                reaction_flux.append(flux)
+        # # # Retrieve positions
+        if "positions" not in self.subgraph_cache[self.current_centroid_id].keys():
+
+            positions = self.__get_node_positions_for_subgraph(self.current_centroid_id, centroid_sub_graph,
+                                                               reaction_nodes, aggregate_nodes, dist_value)
+            scaled_positions = self.__scale_positions(positions, max_dimensions)
+
+            # Store scaled positions in cache
+            self.subgraph_cache[self.current_centroid_id]["positions"] = scaled_positions
+            # Init Cache for compounds and reactions
+            self.subgraph_cache[self.current_centroid_id]["compounds"] = dict()
+            self.subgraph_cache[self.current_centroid_id]["reactions"] = dict()
+            self.subgraph_cache[self.current_centroid_id]["lines"] = dict()
+            self.subgraph_cache[self.current_centroid_id]["focused_connected_items"] = list()
+            self.subgraph_cache[self.current_centroid_id]["focused_connected_lines"] = list()
+        else:
+            # Load positions from cache:
+            scaled_positions = copy.deepcopy(self.subgraph_cache[self.current_centroid_id]["positions"])
+            # Load connected items from previous scene
+            self.focused_connected_items = copy.deepcopy(self.subgraph_cache[self.current_centroid_id]
+                                                         ["focused_connected_items"])
+            self.focused_connected_lines = copy.deepcopy(self.subgraph_cache[self.current_centroid_id]
+                                                         ["focused_connected_lines"])
+            if len(self.focused_connected_items) > 0:
+                self.view_highlighted = True
+
+        # # # Build centroid item
+        aggregate, a_type = self.__get_aggregate_and_type_from_graph(requested_centroid)
+        self.centroid_item, _ = self.__build_compound_item(0, 0, aggregate, a_type, allow_focus=False)
+
+        # # # Build all items
+        self.__build_subgraph_items(centroid_sub_graph, scaled_positions, reaction_nodes)
+        # # # Reset colors of items if coming from a focus function call
+        if triggered_from_focus_click:
+            self.reset_item_colors()
+
+        # Update with current centroid id, if empty
+        if self.settings.current_id_text.text() == "":
+            self.settings.update_current_centroid_text(str(self.current_centroid_id))
+
+        if trigger_plot:
+            self.new_network = True
+
+        if progress_callback is not None:
+            progress_callback.emit((True, 'Status:' + 4 * " " + "Network Ready"))
+
+    def __build_compound_item(self, x: int, y: int, db_compound: Union[db.Compound, db.Flask],
+                              a_type: db.CompoundOrFlask, allow_focus=True) -> Tuple[Compound, str]:
+        cid_string = db_compound.id().string()
+        # Look up in cache first
+        if self.current_centroid_id in self.subgraph_cache.keys() and\
+           cid_string in self.subgraph_cache[self.current_centroid_id]['compounds'].keys():
+            old_compound_item = self.subgraph_cache[self.current_centroid_id]['compounds'][cid_string]
+            # # # Copy stored compound item - necessary for scaling in this thread
+            compound_item = Compound(old_compound_item.x_coord, old_compound_item.y_coord,
+                                     pen=old_compound_item.get_pen(), brush=old_compound_item.get_brush(),
+                                     concentration=old_compound_item.concentration)
+            compound_item.set_current_brush(old_compound_item.get_current_brush())
+            compound_item.set_current_pen(old_compound_item.get_current_pen())
+            compound_item.db_representation = old_compound_item.db_representation
+            compound_item.set_created(old_compound_item.get_created())
+            compound_item.final_concentration = old_compound_item.final_concentration
+            compound_item.concentration_flux = old_compound_item.concentration_flux
+            # delete old_compound_item
+            del old_compound_item
+        else:
+            centroid_structure = db.Structure(db_compound.get_centroid(), self._structure_collection)
+            c_max = query_concentration("max_concentration", centroid_structure, self._property_collection)
+            compound_item = Compound(x, y, pen=self.compound_pen, brush=self.get_aggregate_brush(a_type),
+                                     concentration=c_max)
+            compound_item.db_representation = db_compound
+            compound_item.set_created(db_compound.created())
+
+            compound_item.final_concentration = query_concentration("final_concentration",
+                                                                    centroid_structure, self._property_collection)
+            compound_item.concentration_flux = query_concentration("concentration_flux",
+                                                                   centroid_structure, self._property_collection)
+
+        # Allow to focus is different from graph travel
+        self.__bind_functions_to_object(compound_item, allow_focus)
+
+        # Decide upon scaling
+        if self.settings.advanced_settings_widget.scale_with_concentrations():
+            compound_item.allow_scaling = True
+            compound_item.add_concentration_tooltip()
+        else:
+            compound_item.allow_scaling = False
+        # Update size of compound item
+        compound_item.update_size()
+        # Add to cache
+        self.subgraph_cache[self.current_centroid_id]['compounds'][cid_string] = compound_item
+        self.replace_in_compound_list(compound_item)
+
+        return compound_item, cid_string
+
+    def __build_reaction_item(self, x: int, y: int, reaction: db.Reaction, side: int):
+        assert self._graph
+        assert self.settings
+        plot_item = True
+        # Look up in cache first
+        if reaction.id().string() in self.subgraph_cache[self.current_centroid_id]['reactions'].keys():
+            old_reaction_item = self.subgraph_cache[self.current_centroid_id]['reactions'][reaction.id().string()]
+            # # # Copy stored reaction item - necessary for scaling in this thread
+            reaction_item = Reaction(old_reaction_item.x_coord, old_reaction_item.y_coord,
+                                     pen=old_reaction_item.get_pen(), brush=old_reaction_item.get_brush(),
+                                     flux=old_reaction_item.get_flux(),
+                                     invert_direction=old_reaction_item.invert_direction)
+            reaction_item.set_current_brush(old_reaction_item.get_current_brush())
+            reaction_item.set_current_pen(old_reaction_item.get_current_pen())
+            # Copy all attributes
+            reaction_item.barriers = old_reaction_item.barriers
+            reaction_item.db_representation = old_reaction_item.db_representation
+            reaction_item.set_created(old_reaction_item.get_created())
+            reaction_item.assigned_es_id = old_reaction_item.assigned_es_id
+            reaction_item.energy_difference = old_reaction_item.energy_difference
+            reaction_item.spline = old_reaction_item.spline
+            reaction_item.barrierless_type = old_reaction_item.barrierless_type
+            # delete old_reaction_item
+            del old_reaction_item
+        else:
+            # Get elementary step from graph or database
+            es_from_graph = None
+            node_id = reaction.id().string() + ";" + str(side) + ";"
+            if "elementary_step_id" in self._graph.nodes(data=True)[node_id]:
+                es_id = db.ID(
+                    self._graph.nodes(data=True)[node_id]["elementary_step_id"])
+                es_from_graph = db.ElementaryStep(es_id, self._elementary_step_collection)
+
+            if es_from_graph is None:
+                if self._graph_with_structure_model:
+                    tmp_structure_model = self._graph_model
+                else:
+                    tmp_structure_model = None
+                es, barriers = self._get_elementary_step_of_reaction_from_db(
+                    reaction,
+                    self._graph_model,
+                    tmp_structure_model)
             else:
-                reaction_flux.append(None)
+                es = es_from_graph
+                barriers = get_barriers_for_elementary_step_by_type(es, "electronic_energy", self._graph_model,
+                                                                    self._structure_collection,
+                                                                    self._property_collection)
 
-            elementary_step = check_barrier_height(
-                r,
-                self.db_manager,
-                model,
-                structure_collection,
-                property_collection,
-                max_barrier,
-                min_barrier,
-                always_show_barrierless
+            if es is None:
+                return None
+            # Add reaction flux to reaction item
+            # NOTE: Absolute flux, i guess
+            flux = query_reaction_flux("_reaction_edge_flux", reaction,
+                                       self._compound_collection, self._flask_collection,
+                                       self._structure_collection, self._property_collection)
+            # Creating reaction item
+            reaction_item = Reaction(
+                x, y, flux=flux,
+                pen=self.reaction_pen,
+                brush=self.get_reaction_brush(es.get_type()),
+                # invert direction if side is 1
+                invert_direction=bool(side)
             )
-            if elementary_step is not None:
-                reaction_cache.append(r)
-                elementary_step_cache.append(elementary_step)
+            reaction_item.set_barriers(barriers)
 
-        # Part I - Clustering of the Reactions
-        # fill new list by reaction items
-        reaction_cache_items: List[Any] = []
-        for reaction in reaction_cache:
-            reaction_id = reaction.id().string()
-            selected_reaction = {'_id': {'$oid': reaction_id}}
-            reaction_info = json.loads(self.__getitem__(reaction_collection.find(dumps(selected_reaction))))
-            reaction_cache_items.append(reaction_info)
+            if es.get_type() == db.ElementaryStepType.BARRIERLESS:
+                reaction_item.barrierless_type = True
 
-        centroid_id = {'id': {'$oid': centroid_id_string}, 'type': 'compound'}
+            reaction_item.db_representation = reaction
+            reaction_item.set_created(reaction.created())
+            reaction_item.assigned_es_id = es.id()
+            struct = db.Structure(es.get_reactants()[0][0], self._structure_collection)
+            # NOTE: Energy difference might be redundant
+            reaction_item.energy_difference = get_energy_change(
+                es, "electronic_energy", struct.get_model(), self._structure_collection, self._property_collection)
 
-        # cluster reactions with multiple compounds
-        for i in range(len(reaction_cache_items)):
-            for j in range(i + 1, len(reaction_cache_items)):
-                for k in reaction_cache_items[i]["rhs"]:
-                    for m in reaction_cache_items[j]["rhs"]:
-                        if k != centroid_id and k == m:
-                            self.__reformat_reaction(compound_pairs_in_reaction, i, j)
+            if es.has_spline():
+                reaction_item.spline = es.get_spline()
 
-                    for m in reaction_cache_items[j]["lhs"]:
-                        if k != centroid_id and k == m:
-                            self.__reformat_reaction(compound_pairs_in_reaction, i, j)
+        self.__bind_functions_to_object(reaction_item)
+        # Decide upon scaling
+        if self.settings.advanced_settings_widget.scale_with_concentrations():
+            reaction_item.allow_scaling = True
+        else:
+            reaction_item.allow_scaling = False
 
-                for k in reaction_cache_items[i]["lhs"]:
-                    for m in reaction_cache_items[j]["lhs"]:
-                        if k != centroid_id and k == m:
-                            self.__reformat_reaction(compound_pairs_in_reaction, i, j)
+        # Decide, if plotted or not
+        plot_item = False
+        if reaction_item.barriers is not None:
+            plot_item = self.__barrier_within_plot_window(reaction_item.barriers, side) and \
+                self.__created_after_time_limit(reaction_item.get_created()) and \
+                self.__reaction_flux_above_threshold(reaction_item.get_flux())
+        # Check, if barrierless should be shown
+        if reaction_item.barrierless_type and not\
+           self.settings.advanced_settings_widget.always_show_barrierless():
+            plot_item = False
+        # Add to cache
+        self.subgraph_cache[self.current_centroid_id]['reactions'][reaction.id().string()] = reaction_item
+        if plot_item:
+            self.add_to_reaction_list(reaction_item)
+            return reaction_item
+        else:
+            return None
 
-                    for m in reaction_cache_items[j]["rhs"]:
-                        if k != centroid_id and k == m:
-                            self.__reformat_reaction(compound_pairs_in_reaction, i, j)
+    def __build_edge(self, start: QPoint, end: QPoint, line_id: str):
+        # Look edge up in cache first
+        if line_id in self.subgraph_cache[self.current_centroid_id]['lines'].keys():
+            edge_item = self.subgraph_cache[self.current_centroid_id]['lines'][line_id]
+        else:
+            path = QPainterPath(start)
+            path.lineTo(end)
+            # ID must be unique for scene!
+            edge_item = QGraphicsPathItem(path)
+            edge_item.setPen(self.path_pen)
+            self.subgraph_cache[self.current_centroid_id]['lines'][line_id] = edge_item
+        return edge_item
 
-        # resolve sublist in list
-        reaction_multiple_compounds_index = [item for sublist in compound_pairs_in_reaction for item in sublist]
+    def __barrier_within_plot_window(self, barriers: Union[Tuple[float, float], Tuple[None, None]],
+                                     side: int):
+        acceptable_barrier = True
+        # Safety Check to avoid None comparison
+        if not any(barrier is None for barrier in barriers) and self.settings is not None:
+            if self.settings.advanced_settings_widget.get_max_barrier() < barriers[side] or \
+               self.settings.advanced_settings_widget.get_min_barrier() > barriers[side]:
+                acceptable_barrier = False
 
-        # remove dublicates elements
-        reaction_multiple_compounds_index = list(dict.fromkeys(reaction_multiple_compounds_index))
+        return acceptable_barrier
 
-        elementary_step_cache_sorted = []
-        reaction_flux_sorted = []
+    def __created_after_time_limit(self, created: Union[datetime, None]) -> bool:
+        if created is None or created > datetime.fromtimestamp(self.settings.time_edit.dateTime().toSecsSinceEpoch()):
+            return True
+        else:
+            return False
 
-        # add clustered reactions in the new list
-        for index in reaction_multiple_compounds_index:
-            reaction_cache_sorted.append(reaction_cache[index])
-            elementary_step_cache_sorted.append(elementary_step_cache[index])
-            reaction_flux_sorted.append(reaction_flux[index])
+    def __reaction_flux_above_threshold(self, flux: Union[float, None]) -> bool:
+        if self.settings.advanced_settings_widget.scale_with_concentrations() and \
+           flux <= self.settings.advanced_settings_widget.get_min_flux():
+            return False
+        else:
+            return True
 
-        reaction_multiple_compounds_index.sort(reverse=True)
-        for index in reaction_multiple_compounds_index:
-            reaction_cache.pop(index)
-            elementary_step_cache.pop(index)
-            reaction_flux.pop(index)
+    def __build_graph(self):
+        # Init basic finder
+        pathfinder = pf(self.db_manager)
+        pathfinder.options.barrierless_weight = 1.0
+        # Set model for graph from widget
+        self._graph_model = copy.deepcopy(self.settings.advanced_settings_widget.get_model())
+        pathfinder.options.model = self._graph_model
+        pathfinder.options.graph_handler = "basic"
 
-        # add missing reactions in the new sorted list
-        reaction_cache_sorted += reaction_cache
-        elementary_step_cache_sorted += elementary_step_cache
-        reaction_flux_sorted += reaction_flux
-        reaction_cache = []
-        elementary_step_cache = []
-        reaction_flux = []
+        pathfinder.options.use_structure_model = False
+        if self.settings.advanced_settings_widget.enforce_structure_model():
+            pathfinder.options.use_structure_model = True
+            pathfinder.options.structure_model = self._graph_model
+            self._graph_with_structure_model = True
+        else:
+            self._graph_with_structure_model = False
+        # Build graph
+        pathfinder.build_graph()
+        self._graph = copy.deepcopy(pathfinder.graph_handler.graph)
 
-        # Part II - Rotation and Formation of Reactions
-        # presentation of reactions
-        total_number_of_reactions = len(reaction_cache_sorted)
-        for counter, r in enumerate(reaction_cache_sorted):
-            rid_string = r.id().string()
-            selected_rid = {'_id': {'$oid': rid_string}}
-            current_reaction = json.loads(self.__getitem__(reaction_collection.find(dumps(selected_rid))))
-            flux = reaction_flux_sorted[counter]
+    def __get_subgraph_of_centroid(self, centroid_id: str) -> Tuple[nx.DiGraph, List[str], List[str]]:
+        assert self._graph
+        reaction_nodes = []
+        aggregate_nodes = []
+        # Attempt reset
+        centroid_subgraph = None
+        undirected_graph = self._graph.to_undirected()
+        if centroid_id not in self.subgraph_cache.keys():
+            # # # Reactions outgoing from current centroid only!
+            for centroid_edge in self._graph.out_edges(centroid_id):
+                reaction_nodes.append(centroid_edge[1])
+                for reaction_edge in undirected_graph.edges(centroid_edge[1]):
+                    if reaction_edge[1] != centroid_id:
+                        aggregate_nodes.append(reaction_edge[1])
+            # Extract from subgraph from graph
+            centroid_subgraph = self._graph.subgraph([centroid_id] + reaction_nodes + aggregate_nodes).copy()
+            # Reset weights to one
+            # NOTE: If not basic, with barrier info, one could attempt incorporating this information
+            for edge in centroid_subgraph.edges:
+                centroid_subgraph.edges[edge]['weight'] = 1.0  # old reset
+            # Store subgraph in cache
+            self.subgraph_cache[centroid_id] = {"graph": centroid_subgraph}
+        # # # End building Subgraph
+        else:
+            centroid_subgraph = copy.deepcopy(self.subgraph_cache[centroid_id]["graph"])
+            # Sort to list of nodes
+            for node in centroid_subgraph.nodes():
+                if ";" in node:
+                    reaction_nodes.append(node)
+                else:
+                    if node != centroid_id:
+                        aggregate_nodes.append(node)
 
-            # new radius for reactions and flasks
-            radius = 220
-            if total_number_of_reactions <= 40:
-                # circle for number of reaction < 41, each 9° one reaction
-                major_axis = 1
-                minor_axis = 1
+        return centroid_subgraph, reaction_nodes, aggregate_nodes
+
+    @staticmethod
+    def __get_node_positions_for_subgraph(centroid_id: str, subgraph: nx.DiGraph,
+                                          reaction_node_ids: List[str], aggregate_node_ids: List[str],
+                                          min_node_distance=0.2) -> Dict[str, Tuple[float, float]]:
+        # # # Start Positioning
+        # Initial shell, with two rings
+        # Loop over aggregates just to get all positions
+        shell_position = nx.shell_layout(subgraph, [[centroid_id], reaction_node_ids, aggregate_node_ids],
+                                         center=(0, 0), scale=1.0, rotate=0.0)
+
+        # Determine subshell positioning
+        for node in reaction_node_ids:
+            # Products of reaction outside of rxn node
+            outer_sub_shell_rxn = [r_edge[1] for r_edge in subgraph.out_edges(node) if r_edge[1] != centroid_id]
+            if len(outer_sub_shell_rxn) > 1:
+                outer_center = shell_position[node] + 0.3 * shell_position[node]
             else:
-                # ellips for number of reaction > 40
-                major_axis = 1.27   # type: ignore
-                minor_axis = 0.78   # type: ignore
+                outer_center = shell_position[node] + 0.25 * shell_position[node]
+            outer_sub_shell_pos = nx.shell_layout(subgraph, [outer_sub_shell_rxn],
+                                                  center=outer_center, scale=0.05)
+            # Overwrite shell positions of outer sub shells
+            for key, value in outer_sub_shell_pos.items():
+                shell_position[key] = value
 
-            angle_reaction = ((counter / total_number_of_reactions) * 360.0) * (np.pi / 180)
-            list_of_angles.append(angle_reaction)
-            x = radius * major_axis * np.cos(angle_reaction)
-            y = radius * minor_axis * np.sin(angle_reaction)
-
-            if rid_string in self.old_reactions:
-                self.reactions[rid_string] = [self.old_reactions[rid_string]]
-                del self.old_reactions[rid_string]
-                self.reactions[rid_string][0].flux = flux
-                self.reactions[rid_string][0].reset_brush()
-                self.reactions[rid_string][0].setPen(self.reaction_pen)
-
-                # correct rotation of reactions
-                if self.reactions[rid_string][0].rot == 0:
-                    for key in range(len(current_reaction['lhs'])):
-                        if centroid_id["id"] == current_reaction['lhs'][key]["id"]:
-                            self.reactions[rid_string][0].x_coord = x
-                            self.reactions[rid_string][0].y_coord = y
-
-                    for key in range(len(current_reaction['rhs'])):
-                        if centroid_id["id"] == current_reaction['rhs'][key]["id"]:
-                            self.reactions[rid_string][0].x_coord = x
-                            self.reactions[rid_string][0].y_coord = y
-                            self.reactions[rid_string][0].rot = 1
-
-                elif self.reactions[rid_string][0].rot == 1:
-                    for key in range(len(current_reaction['rhs'])):
-                        if centroid_id["id"] == current_reaction['rhs'][key]["id"]:
-                            self.reactions[rid_string][0].x_coord = x
-                            self.reactions[rid_string][0].y_coord = y
-
-                    for key in range(len(current_reaction['lhs'])):
-                        if centroid_id["id"] == current_reaction['lhs'][key]["id"]:
-                            self.reactions[rid_string][0].x_coord = x
-                            self.reactions[rid_string][0].y_coord = y
-                            self.reactions[rid_string][0].rot = 0
-
-                self.reactions[rid_string][0].update_angle(angle_reaction)
-                # Check again on which side the centroid is relative to the direction of the elementary step and the
-                # reaction itself.
-                es = elementary_step_cache_sorted[counter]
-                step_parallel_to_reaction = reaction_is_parallel(r, es, structure_collection)
-                outgoing_reaction = reaction_is_outgoing(r, centroid.id())
-                keep_sign = (outgoing_reaction and step_parallel_to_reaction) or (not outgoing_reaction
-                                                                                  and not step_parallel_to_reaction)
-                self.reactions[rid_string][0].invert_sign_of_difference = not keep_sign
-                self.__animate_move(self.reactions[rid_string][0], x, y)
+            # Reagents or reaction inside of rxn node
+            inner_sub_shell_rxn = [r_edge[0] for r_edge in subgraph.in_edges(node) if r_edge[0] != centroid_id]
+            if len(inner_sub_shell_rxn) > 1:
+                inner_center = shell_position[node] - 0.3 * shell_position[node]
             else:
-                # check, is centroid connected to lhs or rhs
-                for key in range(len(current_reaction['lhs'])):
-                    if centroid_id["id"] == current_reaction['lhs'][key]["id"]:
-                        self.reactions[rid_string] = [Reaction(
-                            x, y, flux=flux, ang=angle_reaction, pen=self.reaction_pen,
-                            brush=self.reaction_brush
-                        )]
-                for key in range(len(current_reaction['rhs'])):
-                    if centroid_id["id"] == current_reaction['rhs'][key]["id"]:
-                        self.reactions[rid_string] = [Reaction(
-                            x, y, flux=flux, ang=angle_reaction, rot=1, pen=self.reaction_pen,
-                            brush=self.reaction_brush
-                        )]
-                self.reactions[rid_string][0].db_representation = r
-                reagents = r.get_reactants(db.Side.BOTH)
-                reagents_types = r.get_reactant_types(db.Side.BOTH)
-                self.reactions[rid_string][0].lhs_ids = [c.string() for c in reagents[0]]
-                self.reactions[rid_string][0].rhs_ids = [c.string() for c in reagents[1]]
-                self.reactions[rid_string][0].lhs_types = reagents_types[0]
-                self.reactions[rid_string][0].rhs_types = reagents_types[1]
-                es = elementary_step_cache_sorted[counter]
-                step_parallel_to_reaction = reaction_is_parallel(r, es, structure_collection)
-                outgoing_reaction = reaction_is_outgoing(r, centroid.id())
-                keep_sign = (outgoing_reaction and step_parallel_to_reaction) or (not outgoing_reaction
-                                                                                  and not step_parallel_to_reaction)
-                self.reactions[rid_string][0].energy_difference = get_energy_change(
-                    es, "electronic_energy", model, structure_collection, property_collection)
-                self.reactions[rid_string][0].invert_sign_of_difference = not keep_sign
-                if es.get_type() != db.ElementaryStepType.BARRIERLESS:
-                    ts = db.Structure(es.get_transition_state())
-                    ts.link(structure_collection)
-                    self.reactions[rid_string][0].structure = ts.get_atoms()
-                else:
-                    self.reactions[rid_string][0].structure = utils.AtomCollection()
-                    self.reactions[rid_string][0].set_brush(self.association_brush)
+                inner_center = shell_position[node] - 0.25 * shell_position[node]
+            inner_sub_shell_pos = nx.shell_layout(subgraph, [inner_sub_shell_rxn],
+                                                  center=inner_center, scale=0.05)
+            # Overwrite shell positions of inner sub shells
+            for key, value in inner_sub_shell_pos.items():
+                shell_position[key] = value
 
-                if es.has_spline():
-                    self.reactions[rid_string][0].spline = es.get_spline()
-                self.__bind_functions_to_object(self.reactions[rid_string][0], False)
-                self.scene_object.addItem(self.reactions[rid_string][0])
-                self.__animate_fade_in(self.reactions[rid_string][0])
+        # Determine position
 
-        # Part III - Swapping and Formation of the Compounds
-        # list existing reaction with element as dict
-        # switch position of compounds if there is a relation between two
-        for i in range(len(list(self.reactions.keys()))):
-            select_R = list(self.reactions.keys())[i]
-            axt = json.loads(self.__getitem__(reaction_collection.find(dumps({'_id': {'$oid': select_R}}))))
-            list_of_reactions.append(axt)
+        spring_position = nx.spring_layout(
+            subgraph.to_undirected(),
+            pos=shell_position,
+            k=min_node_distance,  # node distance
+            fixed=[centroid_id],
+        )
 
-        for entry in range(len(self.reactions.values())):
-            z = 1
-            if entry == len(self.reactions.values()) - 1:
-                z = 0
+        return copy.deepcopy(spring_position)
 
-            # check each compound in rhs
-            for compound in list(self.reactions.values())[entry][0].rhs_ids:
-                if compound == centroid_id_string:
-                    continue
+    @staticmethod
+    def __scale_positions(positions: Dict[str, Any],
+                          max_dimensions: Tuple[int, int]) -> Dict[str, Tuple[int, int]]:
+        pos_matrix_list = []
+        pos_key = []
+        for key, value in positions.items():
+            pos_key.append(key)
+            pos_matrix_list.append(value)
 
-                # take index of the current compound
-                index_compound = list(self.reactions.values())[entry][0].rhs_ids.index(compound)
+        pos_matrix = np.asarray(pos_matrix_list)
+        # Save normalization
+        norm_x = np.max(np.abs(pos_matrix[:, 0])) if np.max(np.abs(pos_matrix[:, 0])) > 1e-9 else 1.0
+        norm_y = np.max(np.abs(pos_matrix[:, 1])) if np.max(np.abs(pos_matrix[:, 1])) > 1e-9 else 1.0
+        pos_matrix[:, 0] = pos_matrix[:, 0] / norm_x * max_dimensions[0]
+        pos_matrix[:, 1] = pos_matrix[:, 1] / norm_y * max_dimensions[1]
 
-                # check, if compound is already existing in next reaction. For the case "yes", then swap index of rhs
-                if compound in list(self.reactions.values())[entry + z][0].rhs_ids:
-                    index_compound_rhs = list(self.reactions.values())[entry + z][0].rhs_ids.index(compound)
-                    if len(list(self.reactions.values())[entry + z][0].rhs_ids) > 1:
-                        if index_compound_rhs == 1:
-                            a = list(self.reactions.values())[entry + z][0].rhs_ids[1]
-                            b = list(self.reactions.values())[entry + z][0].rhs_ids[0]
-                            a, b = b, a
+        scaled_position = {}
+        for key, value in zip(pos_key, pos_matrix):
+            scaled_position[key] = value.astype(int)
 
-                    if len(list(self.reactions.values())[entry][0].rhs_ids) > 1:
-                        if index_compound == 0:
-                            a = list(self.reactions.values())[entry][0].rhs_ids[1]
-                            b = list(self.reactions.values())[entry][0].rhs_ids[0]
-                            a, b = b, a
+        return scaled_position
 
-                # check, if compound is already existing in next reaction. For the case "yes", then swap index of lhs
-                if compound in list(self.reactions.values())[entry + z][0].lhs_ids:
-                    index_compound_lhs = list(self.reactions.values())[entry + z][0].lhs_ids.index(compound)
-                    if len(list(self.reactions.values())[entry + z][0].lhs_ids) > 1:
-                        if index_compound_lhs == 1:
-                            a = list(self.reactions.values())[entry + z][0].lhs_ids[1]
-                            b = list(self.reactions.values())[entry + z][0].lhs_ids[0]
-                            a, b = b, a
+    def __get_aggregate_and_type_from_graph(self,
+                                            node_id: str) -> Tuple[Union[db.Compound, db.Flask], db.CompoundOrFlask]:
+        assert self._graph
+        aggregate: Union[db.Compound, db.Flask]
+        if self._graph.nodes(data=True)[node_id]['type'] == db.CompoundOrFlask.COMPOUND.name:
+            a_type = db.CompoundOrFlask.COMPOUND
+            aggregate = db.Compound(db.ID(node_id), self._compound_collection)
+        else:
+            a_type = db.CompoundOrFlask.FLASK
+            aggregate = db.Flask(db.ID(node_id), self._flask_collection)
 
-                    if len(list(self.reactions.values())[entry][0].rhs_ids) > 1:
-                        if index_compound == 0:
-                            a = list(self.reactions.values())[entry][0].rhs_ids[1]
-                            b = list(self.reactions.values())[entry][0].rhs_ids[0]
-                            a, b = b, a
+        return aggregate, a_type
 
-            # check each compound in lhs
-            for compound in list(self.reactions.values())[entry][0].lhs_ids:
-                if compound == centroid_id_string:
-                    continue
+    def __build_subgraph_items(self, subgraph: nx.DiGraph,
+                               positions: Dict[str, Tuple[int, int]], reaction_nodes: List[str]):
+        # NOTE: parallelize this!
+        for node in reaction_nodes:
+            # Draw Rxn Nodes and edges
+            rxn = db.Reaction(db.ID(node.split(";")[0]), self._reaction_collection)
+            side = int(node.split(";")[1])
+            # Filter are in building the reaction item
+            rxn_item = self.__build_reaction_item(positions[node][0], positions[node][1], rxn, side)
+            if rxn_item is None:
+                continue
+            # # # Rotate rxn item such that the rhs side points to the average outgoing position
+            out_positions = np.array([np.array(positions[edge[1]]) for edge in subgraph.out_edges(node)])
+            # Obtain relative vector of all outgoing positions
+            rel_out_positions = np.sum(out_positions - np.array(positions[node]), axis=0)
+            # Calculate angle to match the outgoing of the rxn item
+            # with the average relative vector of the products
+            # range from 0 to 2*pi, arctan(cross.norm, dot)
+            rot_angle = np.arctan2(-rel_out_positions[1], np.dot(rel_out_positions, np.array([1, 0])))
+            rot_angle += 2 * np.pi if rot_angle < 0 else 0
+            rxn_item.update_angle(rot_angle)
+            # # # Draw incoming edges of rxn node
+            for e_count, edge in enumerate(subgraph.in_edges(node)):
+                # Draw edge from aggregate to lhs of rxn
+                line_id = "_".join(list(edge)) + "_" + str(e_count)
+                edge_item = self.__build_edge(QPoint(positions[edge[0]][0],
+                                                     positions[edge[0]][1]),
+                                              rxn_item.incoming(), line_id)
+                self.line_items[line_id] = edge_item
 
-                # take index of the current compound
-                index_compound = list(self.reactions.values())[entry][0].lhs_ids.index(compound)
+                # Check if compound is drawn already
+                if edge[0] not in self.compounds.keys():
+                    # Retrieve information of aggregate
+                    aggregate, a_type = self.__get_aggregate_and_type_from_graph(edge[0])
+                    a_position = positions[edge[0]]
+                    self.__build_compound_item(a_position[0], a_position[1], aggregate, a_type)
 
-                # check, if compound is already existing in next reaction. For the case "yes", then swap index of rhs
-                if compound in list(self.reactions.values())[entry + z][0].rhs_ids:
-                    index_compound_rhs = list(self.reactions.values())[entry + z][0].rhs_ids.index(compound)
-                    if len(list(self.reactions.values())[entry + z][0].rhs_ids) > 1:
-                        if index_compound_rhs == 1:
-                            a = list(self.reactions.values())[entry + z][0].rhs_ids[1]
-                            b = list(self.reactions.values())[entry + z][0].rhs_ids[0]
-                            a, b = b, a
-
-                    if len(list(self.reactions.values())[entry][0].lhs_ids) > 1:
-                        if index_compound == 0:
-                            a = list(self.reactions.values())[entry][0].lhs_ids[1]
-                            b = list(self.reactions.values())[entry][0].lhs_ids[0]
-                            a, b = b, a
-
-                # check, if compound is already existing in next reaction. For the case "yes", then swap index of lhs
-                if compound in list(self.reactions.values())[entry + z][0].lhs_ids:
-                    index_compound_lhs = list(self.reactions.values())[entry + z][0].lhs_ids.index(compound)
-                    if len(list(self.reactions.values())[entry + z][0].lhs_ids) > 1:
-                        if index_compound_lhs == 1:
-                            a = list(self.reactions.values())[entry + z][0].lhs_ids[1]
-                            b = list(self.reactions.values())[entry + z][0].lhs_ids[0]
-                            a, b = b, a
-
-                    if len(list(self.reactions.values())[entry][0].lhs_ids) > 1:
-                        if index_compound == 0:
-                            a = list(self.reactions.values())[entry][0].lhs_ids[1]
-                            b = list(self.reactions.values())[entry][0].lhs_ids[0]
-                            a, b = b, a
-
-        # Formation of compounds
-        for count, r_list in enumerate(self.reactions.values()):
-            r = r_list[0]
-            deviation_change = False
-
-            for cid_string, ctype in zip(r.lhs_ids + r.rhs_ids, r.lhs_types + r.rhs_types):
-                if cid_string in self.compounds:
-                    continue
-                c = get_compound_or_flask(db.ID(cid_string), ctype, compound_collection, flask_collection)
-
-                # is compound on side of centroid --> inside
-                inside = False
-                if centroid_id_string in r.lhs_ids and cid_string in r.lhs_ids:
-                    inside = True
-                if centroid_id_string in r.rhs_ids and cid_string in r.rhs_ids:
-                    inside = True
-
-                # check, if the frequency of compound in one or more reactions
-                compounds_in_lhs = []
-                compounds_in_rhs = []
-
-                # generate dictionary of 2 elements of c
-                id_c = json.loads(self.__getitem__(c))['_id']
-                objecttype_c = json.loads(self.__getitem__(c))['_objecttype']
-                check_c = {'id': id_c, 'type': objecttype_c}
-
-                # check the frequency of same compound_rhs in reactions
-                for reaction in range(len(list_of_reactions)):
-                    if check_c in list_of_reactions[reaction]['rhs']:
-                        compounds_in_rhs.append(reaction)
-
-                # check the frequency of same compound_lhs in reactions
-                for reaction in range(len(list_of_reactions)):
-                    if check_c in list_of_reactions[reaction]['lhs']:
-                        compounds_in_lhs.append(reaction)
-
-                len_rhs = len(compounds_in_rhs)
-                len_lhs = len(compounds_in_lhs)
-                # formation of the compound depending on inside/outside
-                if inside:
-                    # radius compound inside - depending on number of reactions
-                    if (len_lhs == 1) ^ (len_rhs == 1):
-                        # if compound consist to one reaction
-                        radius = 120
-                        # angle of compound depending on angle_reaction plus deviation of 0.07
-                        deviation = 0.07
-                        angle_compound = list_of_angles[count] + deviation
-
-                    elif (len_lhs == 1 and len_rhs == 1):
-                        # if compound consists to two reactions:
-                        if total_number_of_reactions <= 40:
-                            # radius = 280
-                            radius = 160
-                        else:
-                            # radius = 280
-                            radius = 160
-
-                        angle_compound_lhs, angle_compound_rhs = 0, 0
-                        for i in range(len_lhs):
-                            angle_compound_lhs += list_of_angles[compounds_in_lhs[i]]
-                        for i in range(len_rhs):
-                            angle_compound_rhs += list_of_angles[compounds_in_rhs[i]]
-
-                        # in the middle of the angle of i reactions
-                        if (len_rhs > 1 and len_lhs == 0) or (len_lhs > 1 and len_rhs == 0):
-                            angle_compound = max(angle_compound_rhs, angle_compound_lhs) / (len_lhs + len_rhs)
-                        else:
-                            angle_compound = (angle_compound_rhs + angle_compound_lhs) / (len_lhs + len_rhs)
-
-                        if total_number_of_reactions > 40:
-                            angle_compound = angle_compound + 0.02
-
-                    if len_lhs > 1 or len_rhs > 1:
-                        # if compound consists to multiple reactions:
-                        if total_number_of_reactions <= 40:
-                            # radius = 280
-                            radius = 160
-                        else:
-                            # radius = 280
-                            radius = 160
-
-                        angle_compound_lhs, angle_compound_rhs = 0, 0
-                        for i in range(len_lhs):
-                            angle_compound_lhs += list_of_angles[compounds_in_lhs[i]]
-                        for i in range(len_rhs):
-                            angle_compound_rhs += list_of_angles[compounds_in_rhs[i]]
-
-                        # in the middle of the angle of i reactions
-                        if (len_rhs > 1 and len_lhs == 0) or (len_lhs > 1 and len_rhs == 0):
-                            angle_compound = max(angle_compound_rhs, angle_compound_lhs) / (len_lhs + len_rhs)
-                        else:
-                            angle_compound = (angle_compound_rhs + angle_compound_lhs) / (len_lhs + len_rhs)
-
-                        if total_number_of_reactions > 40:
-                            angle_compound = angle_compound + 0.02
-                else:
-                    # radius of circle: compound outside - depending on number of reactions
-                    if len_lhs > 1 or len_rhs > 1:
-                        # if compound consists to more reactions at same side (lhs/rhs)
-                        if total_number_of_reactions <= 40:
-                            # radius = 350
-                            radius = 280
-                        else:
-                            # radius = 340
-                            radius = 280
-
-                        angle_compound_lhs, angle_compound_rhs = 0, 0
-                        for i in range(len_lhs):
-                            angle_compound_lhs += list_of_angles[compounds_in_lhs[i]]
-                        for i in range(len_rhs):
-                            angle_compound_rhs += list_of_angles[compounds_in_rhs[i]]
-
-                        # in the middle of the angle of i reactions
-                        if (len_rhs > 1 and len_lhs == 0) or (len_lhs > 1 and len_rhs == 0):
-                            angle_compound = max(angle_compound_rhs, angle_compound_lhs) / (len_lhs + len_rhs)
-                        else:
-                            angle_compound = (angle_compound_rhs + angle_compound_lhs) / (len_lhs + len_rhs)
-
-                    elif ((cid_string in r.rhs_ids) and len(r.rhs_ids) == 2) \
-                            or ((cid_string in r.lhs_ids) and len(r.lhs_ids) == 2):
-                        if total_number_of_reactions <= 40:
-                            radius = 350
-                            if deviation_change is False:
-                                deviation = -0.05
-                            elif deviation_change:
-                                deviation = 0.05
-                        else:
-                            radius = 340
-                            if deviation_change is False:
-                                deviation = -0.03
-                            elif deviation_change:
-                                deviation = 0.03
-
-                        angle_compound = list_of_angles[count] + deviation
-                        deviation_change = True
-                    else:
-                        # if compound on outside consists to one reactions:
-                        if total_number_of_reactions <= 40:
-                            radius = 350
-                        else:
-                            radius = 340
-
-                        angle_compound = list_of_angles[count]
-
-                if total_number_of_reactions <= 40:
-                    major_axis = 1
-                    minor_axis = 1
-                else:
-                    major_axis = 1.27   # type: ignore
-                    minor_axis = 0.78   # type: ignore
-
-                x = radius * major_axis * np.cos(angle_compound)
-                y = radius * minor_axis * np.sin(angle_compound)
-
-                # Update if it is already present
-                concentration = None
-                if scale_with_concentrations:
-                    s = db.Structure(c.get_centroid(), structure_collection)
-                    concentration = query_concentration("max_concentration", s, property_collection)
-                brush = self.get_aggregate_brush(ctype)
-                if cid_string in self.old_compounds and not self.reset_compounds:
-                    self.compounds[cid_string] = [self.old_compounds[cid_string]]
-                    del self.old_compounds[cid_string]
-                    self.compounds[cid_string][0].setBrush(brush)
-                    self.compounds[cid_string][0].setPen(self.compound_pen)
-                    self.compounds[cid_string][0].x_coord = x
-                    self.compounds[cid_string][0].y_coord = y
-                    self.compounds[cid_string][0].concentration = concentration
-                    # scaling = self.compounds[cid_string].get_scaling()
-                    self.__animate_move(self.compounds[cid_string][0], x, y)
-                else:
-                    s = db.Structure(c.get_centroid(), structure_collection)
-                    self.compounds[cid_string] = [Compound(
-                        x, y, pen=self.compound_pen, brush=brush, concentration=concentration
-                    )]
-                    self.compounds[cid_string][0].db_representation = c
-                    self.compounds[cid_string][0].structure = s.get_atoms()
-                    self.__bind_functions_to_object(self.compounds[cid_string][0], True)
-                    self.scene_object.addItem(self.compounds[cid_string][0])
-                    self.__animate_fade_in(self.compounds[cid_string][0])
-
-        # Add lines
-        self.line_items = {}
-        for r in self.reactions.values():
-            self.__draw_lines_per_reaction_side(r[0], "lhs")
-            self.__draw_lines_per_reaction_side(r[0], "rhs")
-
-        # Move nodes above lines
-        self.move_to_foreground(self.compounds)
-        self.move_to_foreground(self.reactions)
-
-        # Fade out old items
-        for k in self.old_compounds.keys():
-            self.__animate_fade_out(self.old_compounds[k])
-        for k in self.old_reactions.keys():
-            self.__animate_fade_out(self.old_reactions[k])
-
-        # Start/run animations and wait for them to finish before deleting old items
-        self.timer.start()
-        QTimer.singleShot(1100, self.__delete_old_items)
-        QTimer.singleShot(1150, self.__center_view)
-        QTimer.singleShot(1200, self.__unlock_update)
-        self.reset_compounds = False
+            # # # Draw outgoing edges of rxn node
+            for e_count, edge in enumerate(subgraph.out_edges(node)):
+                # Draw edge from rhs of rxn to aggregate
+                line_id = "_".join(list(edge)) + "_" + str(e_count)
+                edge_item = self.__build_edge(rxn_item.outgoing(),
+                                              QPoint(positions[edge[1]][0],
+                                                     positions[edge[1]][1]),
+                                              line_id)
+                self.line_items[line_id] = edge_item
+                # Check if compound is drawn already, else draw
+                if edge[1] not in self.compounds.keys():
+                    # Retrieve information of aggregate
+                    aggregate, a_type = self.__get_aggregate_and_type_from_graph(edge[1])
+                    a_position = positions[edge[1]]
+                    self.__build_compound_item(a_position[0], a_position[1], aggregate, a_type)
 
     def __center_view(self):
-        self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
-
-    def __draw_lines_per_reaction_side(self, reaction: Reaction, side: str) -> None:
-        ids = reaction.lhs_ids if side == "lhs" else reaction.rhs_ids
-        side_point = QPoint(reaction.lhs()) if side == "lhs" else QPoint(reaction.rhs())
-        rid = reaction.db_representation.id().string()
-        for i, c in enumerate(ids):
-            lid = rid + "_" + c + "_" + str(i)
-            if lid in self.line_items:
-                continue
-            path = QPainterPath(self.compounds[c][0].center())
-            path.lineTo(side_point)
-            self.line_items[lid] = self.scene_object.addPath(path, pen=self.path_pen)
-            self.__animate_fade_in(self.line_items[lid])
+        # self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+        self.centerOn(QPoint(0, 0))
 
     def __bind_functions_to_object(self, object: Any, allow_focus: bool = False) -> None:
         object.bind_mouse_press_function(self.mouse_press_function)
@@ -1049,135 +850,113 @@ class CRNetwork(ReactionAndCompoundView):
         object.bind_hover_leave_function(self.hover_leave_function)
         object.bind_menu_function(self.menu_function)
 
-    def __delete_old_items(self) -> None:
-        # Remove old items
-        for i in self.old_compounds.values():
-            self.scene_object.removeItem(i)
-        for i in self.old_reactions.values():
-            self.scene_object.removeItem(i)
-        self.old_compounds = {}
-        self.old_reactions = {}
-        self.scene_object.update()
-
-    def __unlock_update(self) -> None:
-        self.__currently_updating = False
-        main_window = find_main_window()
-        if main_window is not None:
-            main_window.get_status_bar().clear_message()
-
     def __getitem__(self, i):
         # get information of database to make subscriptable
         return f"{i}"
-
-    def __reformat_reaction(self, input_list, i, j):
-        index_of_i = []
-        index_of_j = []
-
-        if [i, j] not in input_list:
-            input_list.append([i, j])
-
-        for idx, pair in zip(reversed(range(len(input_list))), input_list[:-1]):
-            if i in pair:
-                index_of_i.append(idx)
-            elif j in pair:
-                index_of_j.append(idx)
-
-        if len(index_of_i) > 0 and len(index_of_j) == 0:
-            if i == input_list[index_of_i[0]][0]:
-                i, j = j, i
-                input_list.insert(index_of_i[0], [i, j])
-            elif i == input_list[index_of_i[0]][1]:
-                input_list.insert(index_of_i[0] + 1, [i, j])
-
-            del input_list[-1]
-
-        if len(index_of_j) > 0 and len(index_of_i) == 0:
-            if j == input_list[index_of_j[0]][0]:
-                input_list.insert(index_of_j[0], [i, j])
-            elif j == input_list[index_of_j[0]][1]:
-                i, j = j, i
-                input_list.insert(index_of_j[0] + 1, [i, j])
-
-            del input_list[-1]
-
-        if len(index_of_i) == 1 and len(index_of_j) == 1:
-            if index_of_i[0] + 1 == index_of_j[0]:
-                if i == input_list[index_of_i[0]][1] and j == input_list[index_of_j[0]][1]:
-                    a = input_list[index_of_j[0]][0]
-                    b = input_list[index_of_j[0]][1]
-                    a, b = b, a
-                    input_list.insert(index_of_j[0], [i, j])
-
-        if len(index_of_i) > 0 and len(index_of_j) > 0:
-            for first in index_of_i:
-                for second in index_of_j:
-                    if first + 1 == second:
-                        if input_list[first][1] == input_list[second][0] and input_list[first][1] != j:
-                            del input_list[-1]
-                            continue
 
 
 class CRSettings(ReactionAndCompoundViewSettings):
 
     def __init__(self, parent: QWidget, network: CRNetwork) -> None:
-        super().__init__(parent, QVBoxLayout())
+        super().__init__(parent, VerticalLayout())
         self.network = network
-        self.button_update = QPushButton("Update")
-        self.p_layout.addWidget(self.button_update)
-        self.button_update.clicked.connect(self.__update_function)  # pylint: disable=no-member
-
-        self.button_undo = QPushButton("Undo")
-        self.p_layout.addWidget(self.button_undo)
-        self.button_undo.clicked.connect(self.network.undo_move)  # pylint: disable=no-member
-
-        self.button_redo = QPushButton("Redo")
-        self.p_layout.addWidget(self.button_redo)
-        self.button_redo.clicked.connect(self.network.redo_move)  # pylint: disable=no-member
+        self.new_network = False
+        self.button_query = TextPushButton("Query Database", self._query_database_function)
+        self.button_update = TextPushButton("Update View", self._update_function, shortcut="F5")
+        self.button_load = TextPushButton("Load Graph", self._load_graph_function, shortcut="Ctrl+L")
+        self.button_undo = TextPushButton("Undo", self.network.undo_move, shortcut="Ctrl+Z")
+        self.button_redo = TextPushButton("Redo", self.network.redo_move, shortcut="Ctrl+R")
 
         self.time_label = QLabel(self)
-        self.time_label.resize(100, 40)
+        self.time_label.resize(100, 20)
+        self.time_label.setFixedHeight(20)
         self.time_label.setText("Only Show Modified Reactions Since")
+
         self.time_edit = QDateTimeEdit(QDate())
         self.time_edit.setDisplayFormat("HH:mm dd.MM.yyyy")
-        self.p_layout.addWidget(self.time_label)
-        self.p_layout.addWidget(self.time_edit)
 
         self.current_id_label = QLabel(self)
-        self.current_id_label.resize(100, 40)
+        self.current_id_label.resize(100, 20)
+        self.current_id_label.setFixedHeight(20)
         self.current_id_label.setText("Current Center Aggregate")
-        self.p_layout.addWidget(self.current_id_label)
+
         self.current_id_text = QLineEdit(self)
         self.current_id_text.resize(100, 40)
         self.current_id_text.setText(str(self.network.current_centroid_id))
-        self.p_layout.addWidget(self.current_id_text)
-        self.button_jump_to_id = QPushButton("Jump to ID")
-        self.p_layout.addWidget(self.button_jump_to_id)
-        self.button_jump_to_id.clicked.connect(self.__jump_to_function)  # pylint: disable=no-member
 
-        self.save_to_svg_button = QPushButton("Save SVG")
-        self.p_layout.addWidget(self.save_to_svg_button)
-        self.save_to_svg_button.clicked.connect(self.network.save_svg)  # pylint: disable=no-member
+        self.save_to_svg_button = TextPushButton("Save SVG", self.network.save_svg, shortcut="Ctrl+S")
+        self.button_traveling = TextPushButton("Start Path Analysis", self.__start_path_analysis_function)
 
-        self.button_traveling = QPushButton("Start Path Analysis")
-        self.p_layout.addWidget(self.button_traveling)
-        self.button_traveling.clicked.connect(self.__start_path_analysis_function)  # pylint: disable=no-member
+        # Timer for reploting
+        self.check_new_network_timer = QTimer(self)
+        self.check_new_network_timer.setInterval(50)
+        self.check_new_network_timer.timeout.connect(self.__plot_new_network)  # pylint: disable=no-member
+        if not self.check_new_network_timer.isActive():
+            self.check_new_network_timer.start()
 
-        self.p_layout.addWidget(self.mol_widget)
         self.mol_widget.setMinimumWidth(200)
         self.mol_widget.setMaximumWidth(1000)
         self.mol_widget.setMinimumHeight(300)
         self.mol_widget.setMaximumWidth(1000)
 
-        self.p_layout.addWidget(self.es_mep_widget)
         self.es_mep_widget.setMinimumHeight(300)
         self.es_mep_widget.setMinimumWidth(200)
         self.es_mep_widget.setMaximumWidth(1000)
 
         self._settings_visible = False
+
+        # set layout
+        self.p_layout.addWidget(self.button_query)
+        self.p_layout.addWidget(self.button_load)
+        self.p_layout.addWidget(self.button_update)
+        self.p_layout.addLayout(HorizontalLayout([self.button_undo, self.button_redo]))
+        self.p_layout.add_widgets([
+            self.time_label,
+            self.time_edit,
+            self.current_id_label,
+            self.current_id_text
+        ])
+        self.p_layout.addLayout(HorizontalLayout([self.save_to_svg_button, self.button_traveling]))
+        self.p_layout.add_widgets([
+            self.mol_widget,
+            self.es_mep_widget
+        ])
         self._set_up_advanced_settings_widgets(self.p_layout)
-        self.setLayout(self.p_layout)
-        self.show()
+
+        self._scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_widget.setLayout(self.p_layout)
+        self._scroll_area.setWidget(scroll_widget)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.vscrollbar = self._scroll_area.verticalScrollBar()
+        self.vscrollbar.rangeChanged.connect(self.scroll)
         self.set_advanced_settings_visible()
+        layout = QVBoxLayout()
+        layout.addWidget(self._scroll_area)
+
+        self.setLayout(layout)
+
+        self.button_deactivate_all = QPushButton("Deactivate All Aggregates")
+        self.p_layout.addWidget(self.button_deactivate_all)
+        self.button_deactivate_all.clicked.connect(self.__deactivate_all_aggregates)  # pylint: disable=no-member
+        self.button_deactivate_all.setToolTip("Deactivates the exploration of all aggregates.\n"
+                                              "Note that a running KineticsGear may activate their exploration again.")
+
+        self.button_activate_all_user = QPushButton("Activate All USER_OPTIMIZED")
+        self.p_layout.addWidget(self.button_activate_all_user)
+        self.button_activate_all_user.clicked.connect(self.__activate_all_user_optimized)  # pylint: disable=no-member
+        self.button_activate_all_user.setToolTip("WARNING: Activates all aggregates for exploration for which the\n"
+                                                 "first structures (centroid) is labeled as USER_OPTIMIZED and NOT\n"
+                                                 "all structures that have a structure with the label USER_OPTIMIZED.")
+        self.show()
+
+    @Slot(int, int)
+    def scroll(self, minimum, maximum):
+        value = maximum if self._settings_visible else minimum
+        self.vscrollbar.setValue(value)
+
+        self.show()
 
     def set_advanced_settings_visible(self) -> None:
         self._settings_visible = self.advanced_settings_cbox.isChecked()
@@ -1200,61 +979,69 @@ class CRSettings(ReactionAndCompoundViewSettings):
         layout.addWidget(self.advanced_settings_cbox)
         layout.addWidget(self.advanced_settings_widget)
 
+    def __deactivate_all_aggregates(self):
+        compounds = self.network.db_manager.get_collection('compounds')
+        flasks = self.network.db_manager.get_collection('flasks')
+        for compound in compounds.iterate_all_compounds():
+            compound.link(compounds)
+            compound.disable_exploration()
+        for flask in flasks.iterate_all_flasks():
+            flask.link(flasks)
+            flask.disable_exploration()
+
+    def __activate_all_user_optimized(self):
+        compounds = self.network.db_manager.get_collection('compounds')
+        structures = self.network.db_manager.get_collection('structures')
+        flasks = self.network.db_manager.get_collection('flasks')
+        for compound in compounds.iterate_all_compounds():
+            compound.link(compounds)
+            centroid_id = compound.get_centroid()
+            centroid = db.Structure(centroid_id, structures)
+            if centroid.get_label() == db.Label.USER_OPTIMIZED:
+                compound.enable_exploration()
+        for flask in flasks.iterate_all_flasks():
+            flask.link(flasks)
+            centroid_id = flask.get_centroid()
+            centroid = db.Structure(centroid_id, structures)
+            if centroid.get_label() == db.Label.USER_OPTIMIZED:
+                flask.enable_exploration()
+
     def update_current_centroid_text(self, new_text: str) -> None:
         self.current_id_text.setText(new_text)
 
-    def jump_to_aggregate_id(self, aggregate_id: str):
-        self.current_id_text.setText(aggregate_id)
-        self.__jump_to_function()
+    def _query_database_function(self) -> None:
+        self.network.remove_all_items()
+        self.network.reset_graph()
+        self.network.reset_subgraph_cache()
+        self._update_function()
 
-    def __jump_to_function(self) -> None:
+    def _update_function(self) -> None:
         self.advanced_settings_widget.update_settings()
         requested_string: Union[None, str] = self.current_id_text.text()
         requested_string = requested_string if requested_string else None
-        self.network.update_network(
-            self.advanced_settings_widget.get_max_barrier(), self.advanced_settings_widget.get_min_barrier(),
-            self.advanced_settings_widget.always_show_barrierless(), self.advanced_settings_widget.get_model(),
-            self.advanced_settings_widget.scale_with_concentrations(), self.advanced_settings_widget.get_min_flux(),
-            requested_string
-        )
-        self.update_current_centroid_text(
-            str(self.network.current_centroid_id)
-        )
-
-    def __update_function(self) -> None:
-        main_window = find_main_window()
-        if main_window is not None:
-            status_bar = main_window.get_status_bar()
-            status_bar.update_status('Updating Network ...', timer=None)
-        time = datetime.fromtimestamp(self.time_edit.dateTime().toSecsSinceEpoch())
-        if self.network.earliest_compound_creation is None:
-            compounds = self.network.db_manager.get_collection('compounds')
-            compound = compounds.get_one_compound(dumps({}))
-            if compound is None:
-                return
-            self.network.earliest_compound_creation = compound.created()
-        if self.network.earliest_compound_creation < time:
-            # only query if even relevant for network
-            self.network.reaction_query = datetime_to_query(time)
-        else:
-            self.network.reaction_query = {}
-        self.advanced_settings_widget.update_settings()
-        requested_string: Union[None, str] = self.current_id_text.text()
-        requested_string = requested_string if requested_string else None
-        self.network.update_network(self.advanced_settings_widget.get_max_barrier(),
-                                    self.advanced_settings_widget.get_min_barrier(),
-                                    self.advanced_settings_widget.always_show_barrierless(),
-                                    self.advanced_settings_widget.get_model(),
-                                    self.advanced_settings_widget.scale_with_concentrations(),
-                                    self.advanced_settings_widget.get_min_flux(),
-                                    requested_string)
-        self.update_current_centroid_text(
-            str(self.network.current_centroid_id)
+        self.network.trigger_thread_function(
+            self.network.update_network,
+            self.network._print_progress,
+            self.advanced_settings_widget.get_model(),
+            self.advanced_settings_widget.enforce_structure_model(),
+            trigger_plot=True,
+            requested_centroid=requested_string,
         )
 
     def __start_path_analysis_function(self) -> None:
         from scine_heron.database.graph_traversal import GraphTravelWidget
-        GraphTravelWidget(self.parent(), self.network.db_manager)
+        GraphTravelWidget(self.parent(), self.network.db_manager, self.network._graph_model)
+
+    def _load_graph_function(self) -> None:
+        self.network.remove_all_items()
+        self.network.reset_graph()
+        self.network.reset_subgraph_cache()
+        self.network.load_graph()
+
+    def __plot_new_network(self):
+        if self.network.new_network:
+            self.network.plot_network()
+        self.network.new_network = False
 
 
 class CustomQScrollArea(QScrollArea):
@@ -1278,17 +1065,15 @@ class CompoundReactionWidget(QWidget):
         self.network = CRNetwork(self, self.db_manager)
         self.settings = CRSettings(self, self.network)
         self.network.set_settings_widget(self.settings)
-        self.settings_scroll_area = CustomQScrollArea()
-        self.settings_scroll_area.setWidget(self.settings)
-        self.settings_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.splitter = QSplitter(self)
         self.splitter.addWidget(self.network)
-        self.splitter.addWidget(self.settings_scroll_area)
-        self.splitter.setSizes([320, 280])
+        self.splitter.addWidget(self.settings)
+        self.splitter.setSizes([320, 150])
         layout.addWidget(self.splitter)
 
         # Set dialog layout
         self.setLayout(layout)
 
-    def jump_to_aggregate_id(self, aggregate_id: str):
-        self.settings.jump_to_aggregate_id(aggregate_id)
+    def center_on_aggregate(self, aggregate_id: str):
+        self.settings.update_current_centroid_text(aggregate_id)
+        self.settings._update_function()

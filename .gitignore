@@ -54,3 +54,9 @@ Wired*
 *.wt
 *.tar.gz
 *.bson
+
+#cache files
+.chemoton*.pickle
+.chemoton*.pkl
+.iterable_edit_widget_copy.pkl
+test/

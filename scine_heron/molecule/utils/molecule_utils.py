@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -57,7 +57,7 @@ def molecule_to_atom_collection(molecule: vtkMolecule) -> su.AtomCollection:
         elements.append(su.ElementInfo.element_from_symbol(symbol))
         positions.append(su.BOHR_PER_ANGSTROM * np.array(position))
 
-    return su.AtomCollection(elements, positions)
+    return su.AtomCollection(elements, np.array(positions))
 
 
 def molecule_to_bond_order_collection(molecule: vtkMolecule) -> su.BondOrderCollection:
@@ -86,11 +86,11 @@ def atom_collection_to_molecule(atom_collection: su.AtomCollection) -> vtkMolecu
 def convert_gradients(
     gradients: np.ndarray,
     boost_factor: float = 0.1400142601462408,
-    trust_radius: float = 1.0
+    trust_radius: float = 0.2
 ) -> None:
     """
     Convert gradients from hartree/bohr to hartree/angstrom.
-    Dampen, if max displacement is > trust_radius (default 1 bohr)
+    Dampen, if max displacement is > trust_radius (default 1 angstrom)
     to avoid shooting around nuclei.
     """
     gradients *= boost_factor * su.BOHR_PER_ANGSTROM
@@ -102,7 +102,8 @@ def convert_gradients(
 def apply_gradients(
     molecule: vtkMolecule,
     gradients: np.ndarray,
-    mouse_picked_atom_id: Optional[int] = None,
+    bonds: Optional[np.ndarray] = None,
+    mouse_picked_atom_ids: Optional[List[int]] = None,
     haptic_picked_atom_id: Optional[int] = None,
 ) -> None:
     """
@@ -110,17 +111,37 @@ def apply_gradients(
     """
     n_atoms = molecule.GetNumberOfAtoms()
     for atom_index in range(n_atoms):
-        if atom_index == mouse_picked_atom_id or atom_index == haptic_picked_atom_id:
+        if (
+            mouse_picked_atom_ids is not None
+            and (
+                haptic_picked_atom_id is None
+                or haptic_picked_atom_id in mouse_picked_atom_ids
+            )
+            and atom_index in mouse_picked_atom_ids
+        ):
+            continue
+        if haptic_picked_atom_id is not None and atom_index == haptic_picked_atom_id:
             continue
         gradient = gradients[atom_index]
         atom = molecule.GetAtom(atom_index)
-        positions = atom.GetPosition()
+        position = atom.GetPosition()
 
         atom.SetPosition(
-            positions[0] - gradient[0],
-            positions[1] - gradient[1],
-            positions[2] - gradient[2],
+            position[0] - gradient[0],
+            position[1] - gradient[1],
+            position[2] - gradient[2],
         )
+    if not isinstance(bonds, np.ndarray):
+        bond_collection = su.BondDetector.detect_bonds(molecule_to_atom_collection(molecule))
+        bonds = bond_collection.matrix.toarray()
+
+    for i in range(n_atoms - 1):
+        for j in range(i + 1, n_atoms):
+            bond_id = molecule.GetBondId(i, j)
+            if bond_id == -1:
+                molecule.AppendBond(i, j, int(round(bonds[i, j])))
+            else:
+                molecule.SetBondOrder(bond_id, int(round(bonds[i, j])))
 
 
 def times_bohr_per_angstrom(atom_positions: List[float]) -> List[float]:

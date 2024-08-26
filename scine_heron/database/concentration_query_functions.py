@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -9,6 +9,9 @@ from typing import List, Union
 
 # Third party imports
 import scine_database as db
+
+from warnings import warn
+warn('This is deprecated, please import the queries from scine_database', DeprecationWarning, stacklevel=2)
 
 
 def query_concentration(label: str, centroid: db.Structure, properties: db.Collection) -> float:
@@ -70,7 +73,7 @@ def query_reaction_flux(label_post_fix: str, reaction: db.Reaction, compounds: d
 
     Parameters
     ----------
-    label_post_fix :: str
+    label_post_fix : str
         The property label for the concentration flux will be given as reaction.id().string() + label_post_fix
     reaction : db.Reaction
         The reaction.

@@ -1,0 +1,9 @@
+-r requirements.txt
+-r requirements-autocas.txt
+-r requirements-chemoton.txt
+-r requirements-database.txt
+-r requirements-dev.txt
+-r requirements-molassembler.txt
+-r requirements-serenity.txt
+-r requirements-swoose.txt
+-r requirements-xtb.txt

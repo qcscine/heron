@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -141,3 +141,15 @@ class ElectronicData:
     def __init__(self, atoms: List[Atom], mo: List[MolecularOrbital]) -> None:
         self.atoms = atoms
         self.mo = mo
+
+    def get_occupations(self):
+        occupations = []
+        for mo in self.mo:
+            occupations.append(mo.occupation)
+        return occupations
+
+    def get_orbital_energies(self):
+        energies = []
+        for mo in self.mo:
+            energies.append(mo.energy)
+        return energies

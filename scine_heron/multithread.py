@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import sys
@@ -22,15 +22,15 @@ class WorkerSignals(QObject):
     Supported Signals
     -----------------
 
-    finished :: Signal
+    finished : Signal
         No data
-    error :: Signal
+    error : Signal
         tuple (exctype, value, traceback.format_exc() )
-    result :: Signal
+    result : Signal
         object data returned from processing, anything
-    progress :: Signal
+    progress : Signal
         int indicating % progress
-    running :: Signal
+    running : Signal
         bool indicating if thread is running
     """
 
@@ -38,7 +38,7 @@ class WorkerSignals(QObject):
     error = Signal(tuple)
     result = Signal(object)
     progress = Signal(int)
-    running = Signal(bool)
+    running = Signal(tuple)
 
 
 class Worker(QRunnable):
@@ -49,7 +49,7 @@ class Worker(QRunnable):
 
     Parameters
     ----------
-    callback :: function
+    callback : function
         The function callback to run on this worker thread. Supplied args and
         kwargs will be passed through to the runner.
     args

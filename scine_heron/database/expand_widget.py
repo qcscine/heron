@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import Dict, Optional, Any, List, Union
 import json
 import numpy as np
 
+from scine_database.queries import optimized_labels_enums
+from scine_database.energy_query_functions import get_energy_for_structure
 import scine_database as db
 import scine_utilities as utils
+
 from scine_heron.utilities import (
     color_axis,
     color_figure,
@@ -23,7 +26,6 @@ from scine_heron.database.graphics_items import Compound, Structure, Reaction
 from scine_heron.database.compound_and_flasks_helper import get_compound_or_flask
 from scine_heron.molecule.molecule_widget import MoleculeWidget
 from scine_heron.molecule.molecule_video import MoleculeVideo
-from scine_heron.database.energy_query_functions import get_energy_for_structure
 from scine_heron.utilities import copy_text_to_clipboard
 from scine_heron import get_core_tab
 
@@ -43,6 +45,7 @@ from PySide2.QtGui import (
     QPainterPath,
     QGuiApplication,
     QKeySequence,
+    QPainter
 )
 from PySide2.QtCore import (
     Qt,
@@ -54,7 +57,8 @@ from PySide2.QtCore import (
 
 class ExpandCompound(QWidget):
 
-    def __init__(self, parent: Optional[QWidget], db_manager: db.Manager, selected_aggregate: dict) -> None:
+    def __init__(self, parent: Optional[QWidget], db_manager: db.Manager,
+                 selected_aggregate: Dict[str, Any]) -> None:
         super(ExpandCompound, self).__init__(parent=parent)
 
         self.__selected_aggregate = selected_aggregate
@@ -95,12 +99,13 @@ class ExpandCompound(QWidget):
         self.__update_plot()
 
     def __gather_data(self):
+        allowed_labels = optimized_labels_enums()
         for sid in [x['$oid'] for x in self.__selected_aggregate['structures']]:
             structure = db.Structure(db.ID(sid))
             structure.link(self.__structures)
             # TODO in the future users should have control over this model
             model = structure.get_model()
-            if structure.get_label() == db.Label.DUPLICATE:
+            if structure.get_label() not in allowed_labels:
                 continue
             self.__none_duplicate_structures.append(sid)
             energy = get_energy_for_structure(
@@ -139,7 +144,7 @@ class ExpandCompound(QWidget):
     def __update_plot(self, highlights: Optional[List[str]] = None):
         x = [1.0, 2.0]
         for _ in range(self.__number_of_highlights):
-            self.__ax.lines.pop(-1)
+            self.__ax.lines[-1].remove()
         self.__number_of_highlights = 0
         if highlights is None:
             return
@@ -205,14 +210,18 @@ class ExpandedSingleCompoundNetwork(QGraphicsView):
         self.hover_pen = build_pen(self.highlight_color, width=2)
         self.path_pen = build_pen(self.edge_color)
 
+        # rendering smoother lines and edges of nodes
+        self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+
         self.__unique_structures = unique_structures
         if not self.__unique_structures:
             self.__unique_structures = []
             structure_collection = db_manager.get_collection("structures")
+            allowed_labels = optimized_labels_enums()
             for sid in [x['$oid'] for x in selected_aggregate['structures']]:
                 structure = db.Structure(db.ID(sid))
                 structure.link(structure_collection)
-                if structure.get_label() == db.Label.DUPLICATE:
+                if structure.get_label() not in allowed_labels:
                     continue
                 self.__unique_structures.append(sid)
 
@@ -427,7 +436,8 @@ class ExpandedSingleCompoundNetwork(QGraphicsView):
 
 class ExpandReaction(QWidget):
 
-    def __init__(self, parent: Optional[QWidget], db_manager: db.Manager, selected_aggregate: dict) -> None:
+    def __init__(self, parent: Optional[QWidget], db_manager: db.Manager,
+                 selected_aggregate: Dict[str, Any]) -> None:
         super(ExpandReaction, self).__init__(parent=parent)
 
         self.__selected_aggregate = selected_aggregate
@@ -471,7 +481,7 @@ class ExpandReaction(QWidget):
         self.__gather_data()
         self.__init_plot()
 
-    def __gather_data(self):
+    def __gather_data(self) -> None:
         for cid in [x['id']['$oid'] for x in self.__selected_aggregate['lhs']]:
             self.__compound_ids.append(cid)
         for cid in [x['id']['$oid'] for x in self.__selected_aggregate['rhs']]:
@@ -511,7 +521,7 @@ class ExpandReaction(QWidget):
     def __update_plot_highlights(self, highlights: Optional[List[str]] = None):
         x = [i / 1000 for i in range(1001)]
         for _ in range(self.__number_of_highlights):
-            self.__ax.lines.pop(-1)
+            self.__ax.lines[-1].remove()
         self.__number_of_highlights = 0
         if highlights is None:
             return
@@ -556,11 +566,12 @@ class ExpandReaction(QWidget):
             trajectory.push_back(atoms.positions, energy)
         return trajectory
 
-    def __update_molecule_widget(self, current_focus):
-        if current_focus in self.__elementary_step_ids:
+    def __update_molecule_widget(self, current_focus: Optional[str]) -> None:
+        if current_focus is not None and current_focus in self.__elementary_step_ids:
             trajectory: Any = utils.MolecularTrajectory()
-            if self.__mep_splines_fits_by_id[current_focus] is not None:
-                trajectory = self.__spline_to_trajectory(self.__mep_splines_fits_by_id[current_focus])
+            spline = self.__mep_splines_fits_by_id[current_focus]
+            if spline is not None:
+                trajectory = self.__spline_to_trajectory(spline)
             else:
                 # barrierless reaction
                 s = utils.AtomCollection()
@@ -578,7 +589,7 @@ class ExpandReaction(QWidget):
             self.__vbox.insertWidget(n, self.__molecule_widget)
             if isinstance(old_widget, MoleculeVideo):
                 old_widget.close()
-            self.__draw_point(0.0)
+            self.__draw_point(0)
             return
         elif current_focus in self.__compound_ids or current_focus is None:
             atoms = utils.AtomCollection()
@@ -639,11 +650,14 @@ class ExpandedSingleReactionNetwork(QGraphicsView):
         self.hover_pen = build_pen(self.highlight_color, width=2)
         self.path_pen = build_pen(self.edge_color)
 
+        # rendering smoother lines and edges of nodes
+        self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+
         # Add all data
         self.__current_focus: Optional[str] = None
         self.__current_hover: Optional[str] = None
         self.recolored_items: List[List[db.ID]] = [[], [], [], []]
-
+        # TODO: this is broken
         self.selected_reaction = selected_reaction
         self.total_number_compound_rhs = self.selected_reaction["rhs"]
         self.total_number_compound_lhs = self.selected_reaction["lhs"]
@@ -860,7 +874,7 @@ class ExpandedSingleReactionNetwork(QGraphicsView):
             list_add_lhs.append(lhs_aggregate["structures"])
 
         self.total_number_structures_lhs = [dict(tupleized) for tupleized in set(
-            tuple(item.items()) for item in self.total_number_structures_lhs)]  # reduce dublicated structure
+            tuple(item.items()) for item in self.total_number_structures_lhs)]  # reduce duplicated structure
 
         # layer 4 for structure_lhs
         pos4_y = self.window_height / 2
@@ -941,7 +955,7 @@ class ExpandedSingleReactionNetwork(QGraphicsView):
             # add lines layer 34
             for lhs_id_str in elementary_step_item.lhs_ids:
                 if lhs_id_str in self.structure_lhs:
-                    side_point = QPoint(elementary_step_item.rhs())
+                    side_point = QPoint(elementary_step_item.outgoing())
                     path = QPainterPath(self.structure_lhs[lhs_id_str].center())
                     path.lineTo(side_point)
                     lid = key + "_" + lhs_id_str + "_" + str(i)
@@ -950,7 +964,7 @@ class ExpandedSingleReactionNetwork(QGraphicsView):
             # add lines layer 23
             for rhs_id_str in elementary_step_item.rhs_ids:
                 if rhs_id_str in self.structure_rhs:
-                    side_point = QPoint(elementary_step_item.lhs())
+                    side_point = QPoint(elementary_step_item.incoming())
                     path = QPainterPath(self.structure_rhs[rhs_id_str].center())
                     path.lineTo(side_point)
                     lid = key + "_" + rhs_id_str + "_" + str(i)
@@ -967,6 +981,8 @@ class ExpandedSingleReactionNetwork(QGraphicsView):
 
         self.scene_object.update()
         self.view = QGraphicsView(self.scene_object)
+        # rendering smoother lines and edges of nodes
+        self.view.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
 
     def __move_to_foreground(self, dictionary: Dict[str, QGraphicsItem]) -> None:
         for k in dictionary:

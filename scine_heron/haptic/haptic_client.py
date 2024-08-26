@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -16,6 +16,7 @@ except ImportError:
 except NameError:
     pass
 
+import numpy as np
 from vtk import (
     vtkAtom,
     vtkMolecule,
@@ -128,10 +129,10 @@ class HapticClient:
         if self.device_is_available:
             self.haptic_device_manager.set_calc_gradient_in_loop(calc_gradient_in_loop)
 
-    def update_gradient(self, gradients: List[List[float]]) -> None:
+    def update_gradient(self, gradients: np.ndarray, force_scaling: float = 1.0,) -> None:
         if self.device_is_available:
             self.haptic_device_manager.update_gradient(
                 [
-                    elem for gradient in gradients for elem in gradient
+                    force_scaling * elem for gradient in gradients for elem in gradient
                 ]  # convert 2d gradient to 1d
             )

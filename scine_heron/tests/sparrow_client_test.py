@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -11,11 +11,11 @@ Testing of SparrowClient.
 import unittest
 from numpy.testing import assert_array_almost_equal
 
+import numpy as np
 import scine_utilities as su
 
-from scine_heron.settings.settings import CalculatorSettings
-from scine_heron.mediator_potential.sparrow_client import SparrowClient
-from scine_heron.mediator_potential.mediator_server import check_method_specific_settings
+from scine_heron.calculators.calculator import ScineCalculatorWrapper
+from scine_heron.tests.mocks.settings import CalculatorSettings
 
 
 class TestSparrowClient(unittest.TestCase):
@@ -24,21 +24,28 @@ class TestSparrowClient(unittest.TestCase):
         """
         Check that calculate_gradients calculates the correct gradient for vtkMolecule.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
-        if result.energy is not None:
-            self.assertAlmostEqual(result.energy, -0.8782779599166628, delta=1e-6)
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
+
+        self.assertAlmostEqual(result.energy, -0.8782779599166628, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
             [-0.15099689, 0.0, 0.0],
             [0.15099689, 0.0, 0.0],
@@ -61,26 +68,27 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_mndo(self) -> None:
+    def test_calculate_custom_result_with_mndo(self) -> None:
         """
-        Check that calculate_gradients using "MNDO" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "MNDO" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "MNDO"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(settings.method, "sparrow", True, settings.__dict__,
+                                        su.AtomCollection(elements, pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
-        if result.energy is not None:
-            self.assertAlmostEqual(result.energy, -0.9010157296470183, delta=1e-6)
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
+
+        self.assertAlmostEqual(result.energy, -0.9010157296470183, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
             [-0.11476439, 0.0, 0.0],
             [0.11476439, 0.0, 0.0],
@@ -104,24 +112,25 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_am1(self) -> None:
+    def test_calculate_custom_result_with_am1(self) -> None:
         """
-        Check that calculate_gradients using "AM1" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "AM1" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "AM1"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(settings.method, "sparrow", True, settings.__dict__,
+                                        su.AtomCollection(elements, pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -0.879196405474689, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -147,24 +156,31 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_rm1(self) -> None:
+    def test_calculate_custom_result_with_rm1(self) -> None:
         """
-        Check that calculate_gradients using "RM1" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "RM1" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "RM1"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -0.922618885532389, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -189,24 +205,31 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_pm3(self) -> None:
+    def test_calculate_custom_result_with_pm3(self) -> None:
         """
-        Check that calculate_gradients using "PM3" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "PM3" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "PM3"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -1.015120608923506, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -231,25 +254,31 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_dftb0(self) -> None:
+    def test_calculate_custom_result_with_dftb0(self) -> None:
         """
-        Check that calculate_gradients using "DFTB0" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "DFTB0" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "DFTB0"
         settings_dictionary = settings.__dict__
-        check_method_specific_settings(settings_dictionary)
-        client = SparrowClient(atomic_hessian_switch, settings_dictionary, 1)
-        client.update_calculator(pos, element_strings, settings_dictionary)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings_dictionary,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -0.6040405615738355, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -275,24 +304,31 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_dftb2(self) -> None:
+    def test_calculate_custom_result_with_dftb2(self) -> None:
         """
-        Check that calculate_gradients using "DFTB2" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "DFTB2" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "DFTB2"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -0.604040780992713, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -318,24 +354,31 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_dftb3(self) -> None:
+    def test_calculate_custom_result_with_dftb3(self) -> None:
         """
-        Check that calculate_gradients using "DFTB3" calc_method calculates the correct gradient.
+        Check that calculate_custom_result using "DFTB3" calc_method calculates the correct gradient.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.method = "DFTB3"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
 
         assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         if result.energy is not None:
             self.assertAlmostEqual(result.energy, -0.6040405615738358, delta=1e-6)
         assert_array_almost_equal(result.gradients, [
@@ -361,29 +404,36 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_molecular_charge_0(self) -> None:
+    def test_calculate_custom_result_with_molecular_charge_0(self) -> None:
         """
-        Check that calculate_gradients returns correct gradient with molecular_charge = 0.
+        Check that calculate_custom_result returns correct gradient with molecular_charge = 0.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.molecular_charge = 0
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
+        assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         energy = result.energy
         gradients = result.gradients
         new_hessian = result.hessian
         well_center = result.positions
         charges = result.atomic_charges
 
-        assert energy is not None
         if energy is not None:
             self.assertAlmostEqual(energy, -0.8782779599166628, delta=1e-6)
         assert_array_almost_equal(gradients, [
@@ -407,32 +457,39 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_molecular_charge_1(self) -> None:
+    def test_calculate_custom_result_with_molecular_charge_1(self) -> None:
         """
-        Check that calculate_gradients returns correct gradient with molecular_charge = 1.
+        Check that calculate_custom_result returns correct gradient with molecular_charge = 1.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.spin_multiplicity = 2
         settings.molecular_charge = 1
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
+
+        assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         energy = result.energy
         gradients = result.gradients
         new_hessian = result.hessian
         well_center = result.positions
         charges = result.atomic_charges
 
-        assert energy is not None
-        if energy is not None:
-            self.assertAlmostEqual(energy, -0.4896792008443987, delta=1e-6)
+        self.assertAlmostEqual(energy, -0.4896792008443987, delta=1e-6)
         assert_array_almost_equal(gradients, [
             [-0.04621013, 0.0, 0.0],
             [0.04621013, 0.0, 0.0],
@@ -454,32 +511,38 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_spin_multiplicity_1(self) -> None:
+    def test_calculate_custom_result_with_spin_multiplicity_1(self) -> None:
         """
-        Check that calculate_gradients returns correct gradient with spin_multiplicity = 1.
+        Check that calculate_custom_result returns correct gradient with spin_multiplicity = 1.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.spin_multiplicity = 1
         settings.molecular_charge = 0
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
+        assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
         energy = result.energy
         gradients = result.gradients
         new_hessian = result.hessian
         well_center = result.positions
         charges = result.atomic_charges
 
-        assert energy is not None
-        if energy is not None:
-            self.assertAlmostEqual(energy, -0.8782779599166628, delta=1e-6)
+        self.assertAlmostEqual(energy, -0.8782779599166628, delta=1e-6)
         assert_array_almost_equal(gradients, [
             [-0.15099689, 0.0, 0.0],
             [0.15099689, 0.0, 0.0],
@@ -501,32 +564,39 @@ class TestSparrowClient(unittest.TestCase):
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[0], pos[0])])
         assert all([abs(a - b) <= 0.0001 for a, b in zip(well_center[1], pos[1])])
 
-    def test_calculate_gradients_with_spin_multiplicity_3(self) -> None:
+    def test_calculate_custom_result_with_spin_multiplicity_3(self) -> None:
         """
-        Check that calculate_gradients returns correct gradient with spin_multiplicity = 3.
+        Check that calculate_custom_result returns correct gradient with spin_multiplicity = 3.
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.spin_multiplicity = 3
         settings.molecular_charge = 0
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            True,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
+        assert result.energy is not None
+        assert result.atomic_charges is not None
+        assert result.gradients is not None
+
         energy = result.energy
         gradients = result.gradients
         new_hessian = result.hessian
         well_center = result.positions
         charges = result.atomic_charges
 
-        assert energy is not None
-        if energy is not None:
-            self.assertAlmostEqual(energy, -0.816192264836425, delta=1e-6)
+        self.assertAlmostEqual(energy, -0.816192264836425, delta=1e-6)
         assert_array_almost_equal(gradients, [
             [0.01995274, 0.0, 0.0],
             [-0.01995274, 0.0, 0.0],
@@ -562,32 +632,37 @@ class TestSparrowClient(unittest.TestCase):
         Check that check_setting_validity finds and corrects all invalid setting
         combinations for spin multiplicity
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.spin_multiplicity = 4
         settings.molecular_charge = 0
         settings.spin_mode = "unrestricted"
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            False,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
         new_settings = result.settings
         assert new_settings["spin_multiplicity"] == 3
 
-        settings.spin_mode = "restricted"
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        new_settings["spin_mode"] = "any"
+        client.update_system(-1, [str(e) for e in elements], pos, new_settings)
+        result = client.calculate_custom_result()
         new_settings = result.settings
         assert new_settings["spin_mode"] == "unrestricted"
 
-        settings.spin_multiplicity = 2
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        new_settings["spin_multiplicity"] = 2
+        client.update_system(-1, [str(e) for e in elements], pos, new_settings)
+        result = client.calculate_custom_result()
         new_settings = result.settings
         assert new_settings["spin_multiplicity"] == 1
 
@@ -596,19 +671,24 @@ class TestSparrowClient(unittest.TestCase):
         Check that check_setting_validity finds and corrects all invalid setting
         combinations for spin mode
         """
-        atomic_hessian_switch = True
-        pos = [
-            (-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-            (0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0),
-        ]
-        element_strings = ["H", "H"]
+        pos = np.array([
+            [-0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+            [0.7 * su.BOHR_PER_ANGSTROM, 0.0, 0.0],
+        ])
+        elements = [su.ElementType.H, su.ElementType.H]
         settings = CalculatorSettings()
         settings.spin_mode = "restricted"
         settings.spin_multiplicity = 3
         settings.molecular_charge = 0
 
-        client = SparrowClient(atomic_hessian_switch, settings.__dict__, 1)
-        client.update_calculator(pos, element_strings, settings.__dict__)
-        result = client.calculate_gradients()
+        client = ScineCalculatorWrapper(
+            settings.method,
+            "sparrow",
+            False,
+            settings.__dict__,
+            su.AtomCollection(
+                elements,
+                pos))
+        result = client.calculate_custom_result()
         new_settings = result.settings
         assert new_settings["spin_mode"] == "unrestricted"

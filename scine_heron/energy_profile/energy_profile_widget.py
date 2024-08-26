@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -20,6 +20,7 @@ from scine_heron.utilities import (
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from datetime import datetime
 from typing import List, Optional
 from PySide2.QtCore import QSize
 from PySide2.QtWidgets import (
@@ -29,8 +30,8 @@ from PySide2.QtWidgets import (
     QGridLayout,
     QSpinBox,
     QCheckBox,
-    QComboBox,
 )
+from scine_heron.containers.combo_box import BaseBox
 from scine_heron.energy_profile.energy_profile_status_manager import (
     EnergyProfileStatusManager,
 )
@@ -53,14 +54,14 @@ class EnergyProfileWidget(QDockWidget):
             super(EnergyProfileWidget.Canvas, self).__init__(self.fig)
 
             self.energies: List[float] = []
-            self.time_stamps: List[float] = []
+            self.time_stamps: List[datetime] = []
             self.fixed_time: bool = True
             self.fixed_time_interval: int = 10
             self.last_update: float = float(time.time())
             self.energy_units: List[str] = ["kJ/mol", "Hartree"]
             self._energy_conversions: List[float] = [2625.5, 1.0]
             self.energy_unit: int = 0
-            self.relative_energy: int = 0
+            self.energy_type: int = 0
 
             (self.__line,) = self.ax1.plot([], [], color=get_primary_line_color())
 
@@ -70,7 +71,7 @@ class EnergyProfileWidget(QDockWidget):
             self.ax1.set_title("Electronic Energy Profile", font)
 
             self.ax1.set_xlabel("Relative Time in s")
-            if self.relative_energy:
+            if self.energy_type < 2:
                 self.ax1.set_ylabel(
                     f"Relative energy in {self.energy_units[self.energy_unit]}"
                 )
@@ -90,26 +91,31 @@ class EnergyProfileWidget(QDockWidget):
             if self.fixed_time:
                 x = np.array(
                     [
-                        i - now
+                        (i - now).total_seconds()
                         for i in local_time_stamps[1:n]
-                        if now - i < self.fixed_time_interval
+                        if (now - i).total_seconds() < self.fixed_time_interval
                     ]
                 )
                 y = np.array(
                     [
                         i * unit_conversion
                         for i, j in zip(local_energies[1:n], local_time_stamps[1:n])
-                        if now - j < self.fixed_time_interval
+                        if (now - j).total_seconds() < self.fixed_time_interval
                     ]
                 )
             else:
-                x = np.array(local_time_stamps[1:n]) - now
+                x = np.array(
+                    [
+                        (i - now).total_seconds()
+                        for i in local_time_stamps[1:n]
+                    ]
+                )
                 y = np.array(local_energies[1:n]) * unit_conversion
 
-            if self.relative_energy == 1:
+            if self.energy_type == 0:
                 ref = y[-1]
                 y -= ref
-            elif self.relative_energy == 2:
+            elif self.energy_type == 1:
                 ref = np.min(y)
                 y -= ref
 
@@ -131,7 +137,7 @@ class EnergyProfileWidget(QDockWidget):
             self.draw()
 
         def redraw_axis(self) -> None:
-            if self.relative_energy:
+            if self.energy_type < 2:
                 self.ax1.set_ylabel(
                     f"Relative energy in {self.energy_units[self.energy_unit]}"
                 )
@@ -155,7 +161,7 @@ class EnergyProfileWidget(QDockWidget):
         self._layout.setRowMinimumHeight(0, 200)
         self._layout.setColumnMinimumWidth(0, 560)
         self._inner_widget.setLayout(self._layout)
-        self.__widget_width = 130
+        self.__widget_width = 170
         self.__widget_height = 30
 
         self.__canvas = self.Canvas(parent=self, width=width, height=height)
@@ -170,16 +176,16 @@ class EnergyProfileWidget(QDockWidget):
         self._unit_label.setFixedSize(QSize(self.__widget_width, self.__widget_height))
         self._layout.addWidget(self._unit_label, 1, 1, 1, 1)
 
-        self._unit_cb = QComboBox()
+        self._unit_cb = BaseBox()
         for e in self.__canvas.energy_units:
             self._unit_cb.addItem(e)
         self._unit_cb.currentIndexChanged.connect(self.update_energy_unit)  # pylint: disable=no-member
         self._unit_cb.setFixedSize(QSize(self.__widget_width, self.__widget_height))
         self._layout.addWidget(self._unit_cb, 2, 1, 1, 1)
 
-        self._rel_unit_cb = QComboBox()
+        self._rel_unit_cb = BaseBox()
         # we assume later that every option after the first is a relative one
-        for e in ["absolute", "relative to now", "relative to lowest"]:
+        for e in ["relative to now", "relative to lowest", "absolute"]:
             self._rel_unit_cb.addItem(e)
         self._rel_unit_cb.currentIndexChanged.connect(self.update_rel_energy_unit)  # pylint: disable=no-member
         self._rel_unit_cb.setFixedSize(QSize(self.__widget_width, self.__widget_height))
@@ -218,8 +224,7 @@ class EnergyProfileWidget(QDockWidget):
 
     def update_energy_widget(self, energy_profile: List[EnergyProfilePoint]) -> None:
         self.__canvas.energies.append(energy_profile[-1].energy)
-        now = float(time.time())
-        self.__canvas.time_stamps.append(now)
+        self.__canvas.time_stamps.append(energy_profile[-1].time_stamp)
         self.__canvas.last_update = float(time.time())
         self.__canvas.update_line()
 
@@ -229,7 +234,7 @@ class EnergyProfileWidget(QDockWidget):
         self.__canvas.update_line()
 
     def update_rel_energy_unit(self, new_unit: int) -> None:
-        self.__canvas.relative_energy = new_unit
+        self.__canvas.energy_type = new_unit
         self.__canvas.redraw_axis()
         self.__canvas.update_line()
 

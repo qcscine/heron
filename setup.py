@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
-from os import path
+from os import path, walk
+from itertools import combinations
 from setuptools import setup, find_packages
 import sys
 
@@ -27,21 +28,59 @@ pip install --upgrade pip
 
 here = path.abspath(path.dirname(__file__))
 
-with open(path.join(here, "requirements.txt")) as requirements_file:
-    # Parse requirements.txt, ignoring any commented-out lines.
-    requirements = [line for line in requirements_file.read().splitlines() if not line.startswith("#")]
+
+def read_requirements(file_name: str):
+    with open(path.join(here, file_name)) as requirements_file:
+        # Parse requirements.txt, ignoring any commented-out lines.
+        requirements = []
+        for line in requirements_file:
+            if line.startswith("#"):
+                continue
+            if line.startswith("-r"):
+                requirements.extend(read_requirements(line.split()[-1].strip()))
+            else:
+                requirements.append(line.strip())
+        return list(set(requirements))
+
+variants = []
+for subdir, dirs, files in walk(here):
+    for f in files:
+        if 'requirements-' in f:
+            variants.append(f.split("requirements-")[-1].split(".txt")[0])
+
+assert "all" in variants
+assert "dev" in variants
+variants.remove('all')
+variants.remove('dev')
+package_variants = {
+    'all': read_requirements('requirements-all.txt')
+}
+variants_combinations = [["_".join(sorted(i)) for i in combinations(variants, len(variants) - j)]
+                         for j in range(1, len(variants))]
+
+
+def flatten_list(_list):
+    return [item for sublist in _list for item in sublist]
+
+
+flat_variants = flatten_list(variants_combinations)
+for v in flat_variants:
+    sub_variants = v.split("_")
+    all_requirements = list(set(flatten_list(
+        [read_requirements(f"requirements-{sub}.txt") for sub in sub_variants])))
+    package_variants[v] = all_requirements
 
 with open(path.join(here, "README.rst"), encoding="utf-8") as readme_file:
     readme = readme_file.read()
 
-with open('scine_heron/_version.py') as f:
+with open(path.join(here, 'scine_heron', '_version.py')) as f:
     exec(f.read())
 
 # Define the setup
 setup(
     name="scine_heron",
     version=__version__,
-    author="ETH Zurich, Laboratory of Physical Chemistry, Reiher Group",
+    author="ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group",
     author_email="scine@phys.chem.ethz.ch",
     description="Graphical user interface for SCINE",
     long_description=readme,
@@ -54,6 +93,7 @@ setup(
         "scine_heron": [
             "resources/*",
             "resources/icons/*",
+            "resources/sounds/*",
             # When adding files here, remember to update MANIFEST.in as well,
             # or else they will not be included in the distribution on PyPI!
             # 'path/to/data_file',
@@ -75,8 +115,9 @@ setup(
             'scine_heron_view_trajectory = scine_heron.__init__:view_trajectory_cli',
         ],
     },
-    install_requires=requirements,
+    install_requires=read_requirements('requirements.txt'),
+    extras_require=package_variants,
     zip_safe=False,
     test_suite="pytest",
-    tests_require=["pytest"],
+    tests_require=read_requirements('requirements-all.txt'),
 )

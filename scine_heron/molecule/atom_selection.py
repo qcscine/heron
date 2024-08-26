@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import List, Any
@@ -37,7 +37,7 @@ class AtomSelectionAlgorithm(VTKPythonAlgorithmBase):  # type: ignore[misc]
             inputType=["vtkMolecule", "vtkArrayData"],
             outputType="vtkMolecule",
         )
-        self.selected_atom_id = None
+        self.selected_atom_ids: List[int] = []
 
     def FillInputPortInformation(self, port: int, info: Any) -> int:
         """Sets the required input type to InputType."""
@@ -122,7 +122,7 @@ class AtomSelection:
         # Atom selector
         self.__atom_selector = AtomSelectionAlgorithm()
         self.__selection = vtkArray.CreateArray(vtkArray.DENSE, VTK_INT)
-        self.__selection.Resize(0)
+        self.__selection.Resize(1)
         self.__selection_data = vtkArrayData()
 
         # Mapper
@@ -147,6 +147,12 @@ class AtomSelection:
         self.__actor.GetProperty().SetOpacity(0.5)
         self.__actor.GetProperty().SetColor(0.5, 0.5, 0.5)
 
+    def back_to_default_color(self):
+        self.__actor.GetProperty().SetColor(0.5, 0.5, 0.5)
+
+    def change_color(self, r: float, g: float, b: float):
+        self.__actor.GetProperty().SetColor(r, g, b)
+
     @property
     def actor(self) -> vtkActor:
         """
@@ -157,6 +163,12 @@ class AtomSelection:
     def set_molecule(self, molecule: vtkTrivialProducer) -> None:
         self.__producer.SetOutput(molecule)
         self.set_selection([])
+
+    def get_selection_data(self) -> List[int]:
+        data = []
+        for i in range(self.__selection.GetSize()):
+            data.append(self.__selection.GetValue(i))
+        return data
 
     def set_selection(self, selection: List[int]) -> None:
         self.__selection.Resize(len(selection))

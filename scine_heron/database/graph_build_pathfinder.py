@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import Iterator, List, Tuple, Union, Dict
@@ -11,7 +11,10 @@ import numpy as np
 from itertools import islice
 
 import scine_database as db
-from scine_heron.database.concentration_query_functions import query_reaction_flux, query_concentration
+from scine_database.concentration_query_functions import query_reaction_flux, query_concentration
+
+from warnings import warn
+warn('This is deprecated, please import Pathfinder from scine_chemoton', DeprecationWarning, stacklevel=2)
 
 
 class Pathfinder:
@@ -21,33 +24,33 @@ class Pathfinder:
 
     Attributes
     ----------
-    _calculations :: db.Collection
+    _calculations : db.Collection
         Collection of the calculations of the connected database.
-    _compounds :: db.Collection
+    _compounds : db.Collection
         Collection of the compounds of the connected database.
-    _reactions :: db.Collection
+    _reactions : db.Collection
         Collection of the reactions of the connected database.
-    _elementary_steps :: db.Collection
+    _elementary_steps : db.Collection
         Collection of the elementary steps of the connected database.
-    _structures :: db.Collection
+    _structures : db.Collection
         Collection of the structures of the connected database.
-    _properties :: db.Collection
+    _properties : db.Collection
         Collection of the properties of the connected database.
     graph_handler
         A class handling the construction of the graph. Can be adapted to ones needs.
-    _use_old_iterator :: bool
+    _use_old_iterator : bool
         Bool to indicate if the old iterator shall be used querying for paths between a source - target pair.
-    _unique_iterator_memory :: Tuple[str, str, Iterator]
+    _unique_iterator_memory : Tuple[str, str, Iterator]
         Memory of iterator with source and target string as well as the iterator.
-    start_compounds :: List[str]
+    start_compounds : List[str]
         A list containing the compounds which are present at the start.
-    start_compounds_set :: bool
+    start_compounds_set : bool
         Bool to indicate if start_compounds is set.
-    _pseudo_inf :: float
+    _pseudo_inf : float
         Float for edges with infinite weight.
-    compound_costs :: Dict[str, float]
+    compound_costs : Dict[str, float]
         A dictionary containing the cost of the compounds with the compounds as keys.
-    compound_costs_solved :: bool
+    compound_costs_solved : bool
         Bool to indicate if all compounds have a compound cost.
     """
 
@@ -139,18 +142,18 @@ class Pathfinder:
 
         Parameters
         ----------
-        source :: str
+        source : str
             The ID of the starting compound as string.
-        target :: str
+        target : str
             The ID of the targeted compound as string.
-        n_requested_paths :: int, optional
+        n_requested_paths : int, optional
             Number of requested paths, by default 3
-        n_skipped_paths :: int, optional
+        n_skipped_paths : int, optional
             Number of skipped paths from, by default 0. Allows to set starting point of query.
 
         Returns
         -------
-        found_paths :: List[Tuple[List[str], float]]
+        found_paths : List[Tuple[List[str], float]]
             List of paths where each path consists of two information, the list of nodes of the path and its length.
         """
         assert self.graph_handler
@@ -177,16 +180,16 @@ class Pathfinder:
 
         Parameters
         ----------
-        source :: str
+        source : str
             The ID of the starting compound as string.
-        target :: str
+        target : str
             The ID of the targeted compound as string.
-        number :: int
+        number : int
             The number of unique paths to be returned. Per default, 3 paths are returned.
 
         Returns
         -------
-        path_tuple_list :: List[Tuple[List[str], float]]
+        path_tuple_list : List[Tuple[List[str], float]]
             List of paths where each path consists of two information, the list of nodes of the path and its length.
         """
         assert self.graph_handler
@@ -210,7 +213,6 @@ class Pathfinder:
             same_cost = True
             tmp_path_list: List[List[str]] = list()
             # # # Collect all paths with same cost
-            # TODO: Parameter for max tmp paths
             n_max_collected_paths = 10
             while same_cost and len(tmp_path_list) < n_max_collected_paths:
                 # # # Append old path to tmp_path list
@@ -259,17 +261,17 @@ class Pathfinder:
 
         Parameters
         ----------
-        graph :: nx.DiGraph
+        graph : nx.DiGraph
             The graph to be queried.
-        source :: str
+        source : str
             The ID of the starting compound as string.
-        target :: str
+        target : str
             The ID of the targeted compound as string.
-        n_paths :: int
+        n_paths : int
             The number of paths to be returned.
-        weight :: Union[str, None], optional
+        weight : Union[str, None], optional
             The key for the weight encoded in the edges to be used.
-        path_start :: int, optional
+        path_start : int, optional
             An index of the first returned path, by default 0
 
         Returns
@@ -287,7 +289,7 @@ class Pathfinder:
 
         Parameters
         ----------
-        conditions :: Dict
+        conditions : Dict
             The IDs of the compounds as keys and its given cost as values.
         """
         # # # Reset Start conditions, if already set previously
@@ -308,11 +310,11 @@ class Pathfinder:
 
         Parameters
         ----------
-        u :: str
+        u : str
             The ID of start node.
-        _ :: str
+        _ : str
             The ID of end node.
-        d :: Dict
+        d : Dict
             The edge connecting u and _ as dictionary
 
         Returns
@@ -358,7 +360,7 @@ class Pathfinder:
 
         Parameters
         ----------
-        recursive :: bool
+        recursive : bool
             All compounds are checked for shorter paths, True by default.
             If set to False, compounds for which a cost has been determined are not checked in the next loop.
         """
@@ -514,7 +516,7 @@ class Pathfinder:
 
             Parameters
             ----------
-            reaction :: db.Reaction
+            reaction : db.Reaction
                 The reaction to be added to the graph.
             """
             # Add two rxn nodes
@@ -566,7 +568,7 @@ class Pathfinder:
 
             Parameters
             ----------
-            reaction :: db.Reaction
+            reaction : db.Reaction
                 Reaction of interest
 
             Returns

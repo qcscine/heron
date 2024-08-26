@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from scine_heron.database.runtime_histogram_dialog import RuntimeHistogramDialog
@@ -12,6 +12,7 @@ from scine_heron.utilities import (
 )
 
 from PySide2.QtWidgets import QWidget, QPushButton, QGridLayout, QFrame
+from PySide2.QtGui import QKeySequence
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -152,6 +153,7 @@ class DatabaseMonitorWidget(QWidget):
         self.element_counts.update_statistics(self.db_manager, fake=True)
         layout.addWidget(self.element_counts, 0, 0, 1, 3)
         self.button_update = QPushButton("Update")
+        self.button_update.setShortcut(QKeySequence("r"))
         layout.addWidget(self.button_update, 1, 1)
         self.button_update.clicked.connect(self.update_statistics)  # pylint: disable=no-member
         layout.addWidget(QHLine(), 2, 0, 1, 3)
@@ -164,7 +166,9 @@ class DatabaseMonitorWidget(QWidget):
         self.setLayout(layout)
 
     def update_statistics(self) -> None:
+        self.button_update.setText("Updating...")
         self.element_counts.update_statistics(self.db_manager)
+        self.button_update.setText("Update")
 
     def display_runtime_histogram(self) -> None:
         RuntimeHistogramDialog(self, self.db_manager)

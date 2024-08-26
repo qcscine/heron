@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -28,8 +28,8 @@ class Status(typing.Generic[T]):
     Manages a single value and notifies when this value is changed.
     """
 
-    def __init__(self) -> None:
-        self.__communicator = self.Communicator()
+    def __init__(self, value_type: typing.Type[T]) -> None:
+        self.__communicator = self.create_communicator(value_type)
 
     @abc.abstractmethod
     def get(self) -> T:
@@ -37,19 +37,32 @@ class Status(typing.Generic[T]):
         Returns the current status.
         """
 
-    class Communicator(QObject):
-        """
-        Manages a single signal.
-        """
+    class BaseCommunicator(QObject):
 
-        signal = Signal(object)
+        def __init__(self, signal_type: typing.Type[T]) -> None:
+            super().__init__()
+            self.signal_type = signal_type
+
+        def emit_signal(self, value: T) -> None:
+            if not isinstance(value, self.signal_type):
+                raise TypeError(f"Expected {self.signal_type}, got {type(value).__name__}")
+            self.signal.emit(value)
+
+    def create_communicator(self, signal_type: typing.Type[T]):
+        class DynamicCommunicator(self.BaseCommunicator):  # type: ignore
+            signal = Signal(signal_type)
+
+            def __init__(self) -> None:
+                super().__init__(signal_type)
+
+        return DynamicCommunicator()
 
     @property
     def changed_signal(self) -> Signal:
         """
         Returns the signal used to signal changes.
         """
-        return typing.cast(Signal, self.__communicator.signal)
+        return self.__communicator.signal
 
     @property
     def value(self) -> T:
@@ -91,7 +104,7 @@ class StatusManager(WriteableStatus[T]):
     """
 
     def __init__(self, value: T):
-        super().__init__()
+        super().__init__(type(value))
         self.__value = value
 
     def get(self) -> T:
@@ -121,11 +134,11 @@ class TransformedStatusManager(Status[T]):
         *args: Status[typing.Any],
         **kwargs: Status[typing.Any],
     ):
-        super().__init__()
         self.__apply_transform: typing.Callable[[], T] = lambda: transform(
             *[arg.value for arg in args],
             **{key: value.value for key, value in kwargs.items()},
         )
+        super().__init__(type(self.__apply_transform()))
         self.__value = StatusManager(self.__apply_transform())
         self.__value.changed_signal.connect(
             lambda: self.changed_signal.emit(self.__value.value)
@@ -177,10 +190,10 @@ class TransformedWriteableStatusManager(typing.Generic[S, T], WriteableStatus[T]
         inverse: typing.Callable[[T], S],
         argument: WriteableStatus[S],
     ):
-        super().__init__()
         self.__apply_transform: typing.Callable[[], T] = lambda: transform(
             argument.value
         )
+        super().__init__(type(self.__apply_transform()))
         self.__apply_inverse: typing.Callable[[T], None] = lambda s: setattr(
             argument, "value", inverse(s)
         )
@@ -236,7 +249,7 @@ class AdaptedStatusManager(Status[T]):
     def __init__(
         self, pull: typing.Callable[[], T], signal: Signal,
     ):
-        super().__init__()
+        super().__init__(type(pull()))
         self.__pull = pull
 
         signal.connect(lambda: self.changed_signal.emit(pull()))
@@ -266,7 +279,7 @@ class AdaptedWriteableStatusManager(WriteableStatus[T]):
         push: typing.Callable[[T], None],
         signal: Signal,
     ):
-        super().__init__()
+        super().__init__(type(pull()))
         self.__pull = pull
         self.__push = push
 

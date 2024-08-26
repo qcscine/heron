@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -21,7 +21,7 @@ from scine_heron.settings.settings_status_manager import SettingsStatusManager
 from scine_heron.molecule.styles.haptic_interactor_style import HapticInteractorStyle
 from scine_heron.molecule.create_molecule_animator import create_molecule_animator
 from uuid import uuid1
-from typing import Optional, Dict, Callable, List, TYPE_CHECKING, Any
+from typing import Optional, Dict, Callable, List
 
 from vtk import (
     vtkRenderer,
@@ -30,10 +30,6 @@ from vtk import (
     vtkActor,
 )
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-if TYPE_CHECKING:
-    Signal = Any
-else:
-    from PySide2.QtCore import Signal
 
 
 class MoleculeInteractorStyle(HapticInteractorStyle):
@@ -49,8 +45,7 @@ class MoleculeInteractorStyle(HapticInteractorStyle):
         mapper: vtkMoleculeMapper,
         haptic_client: Optional[HapticClient],
         actors_dict: Dict[str, vtkActor],
-        selected_atom_callback: Callable[[Optional[int]], None],
-        settings_changed_signal: Signal,
+        selected_atom_callback: Callable[[Optional[List[int]]], None],
     ):
         super(MoleculeInteractorStyle, self).__init__(
             interactor,
@@ -66,14 +61,14 @@ class MoleculeInteractorStyle(HapticInteractorStyle):
 
         self.__energy_status_manager: Optional[EnergyProfileStatusManager] = None
         self.__charge_status_manager: StatusManager[Optional[List[float]]] = None  # type: ignore[assignment]
-
-        self.__settings_changed_signal = settings_changed_signal
+        self.__force_status_manager: StatusManager[Optional[List[float]]] = None  # type: ignore[assignment]
 
     def set_status_managers(
         self,
         settings_status_manager: SettingsStatusManager,
         energy_status_manager: Optional[EnergyProfileStatusManager],
         charge_status_manager: StatusManager[Optional[List[float]]],
+        force_status_manager: StatusManager[Optional[List[float]]],
         electronic_data_status_manager: ElectronicDataStatusManager,
     ) -> None:
         super().set_settings_status_manager(settings_status_manager)
@@ -81,6 +76,7 @@ class MoleculeInteractorStyle(HapticInteractorStyle):
 
         self.__energy_status_manager = energy_status_manager
         self.__charge_status_manager = charge_status_manager
+        self.__force_status_manager = force_status_manager
 
     def set_calc_gradient_in_loop(self, calc_gradient_in_loop: bool) -> None:
         """
@@ -115,7 +111,7 @@ class MoleculeInteractorStyle(HapticInteractorStyle):
             self.__energy_status_manager,
             self._electronic_data_status_manager,
             self.__charge_status_manager,
-            self.__settings_changed_signal,
+            self.__force_status_manager,
         )
 
         self.__animator.render_signal.connect(self._render)

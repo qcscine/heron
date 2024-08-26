@@ -1,0 +1,2 @@
+-r requirements.txt
+scine_swoose==2.1.0

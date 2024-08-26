@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -18,11 +18,14 @@ from PySide2.QtWidgets import (
     QGridLayout,
     QLineEdit,
 )
+from PySide2.QtGui import QKeySequence
 from typing import Optional, Any, TYPE_CHECKING
 if TYPE_CHECKING:
     Signal = Any
 else:
     from PySide2.QtCore import Signal
+
+from scine_heron.status_manager import StatusManager
 
 
 class EditMoleculeWidget(QWidget):
@@ -35,6 +38,8 @@ class EditMoleculeWidget(QWidget):
 
     def __init__(self) -> None:
         super(EditMoleculeWidget, self).__init__()
+
+        self.__enabled = StatusManager(True)
 
         self.__atomNumberLabel = QLabel("Atomic Number:")
         self.__atomNumberField = QLineEdit(self)
@@ -61,10 +66,17 @@ class EditMoleculeWidget(QWidget):
 
         self.__appendAtomButton.clicked.connect(self.__appendAtom)  # pylint: disable=no-member
         self.__removeAtomButton.clicked.connect(self.__removeAtom)  # pylint: disable=no-member
+        self.__removeAtomButton.setShortcut(QKeySequence("Del"))
         self.__popUpPeriodicTableButton.clicked.connect(  # pylint: disable=no-member
             self.__open_periodict_table_dialog
         )
         self.__periodicTableDialog: Optional[PeriodicTable] = None
+
+    def set_enabled(self, enabled: bool) -> None:
+        """
+        Set widgets enabled.
+        """
+        self.__enabled.value = enabled
 
     def __set_atom_number(self, periodic_table_item: PeriodicTableItem) -> None:
         atomic_number = periodic_table_item.Z

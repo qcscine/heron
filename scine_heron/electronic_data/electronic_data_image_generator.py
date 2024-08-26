@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -122,7 +122,7 @@ class ElectronicDataImageGenerator:
                                 block_index, coefficients_size, x, y, z
                             )
                         block = self.__cache[block_index].dot(mo.coefficients)
-                    if np.sum(np.abs(block)) > 1.0e-4:
+                    if block is not None and np.sum(np.abs(block)) > 1.0e-4:
                         self.__add_mo_block_at_image(image, block, i, j, k)
 
                     k += self.__block_size

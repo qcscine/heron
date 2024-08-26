@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
+
 from scine_utilities import (
     StructuralCompletion,
     ANGSTROM_PER_BOHR,
@@ -12,13 +13,11 @@ from scine_utilities import (
 
 from vtk import vtkMolecule
 import numpy as np
-from typing import List, TypeVar, Optional, Callable, Tuple, Dict, Any
+from typing import List, Optional, Callable, Tuple, Dict, Any
 
 from scine_heron.edit_molecule.collision import collision_multiple
 
 import itertools
-
-Position = TypeVar("Position")
 
 
 def _create_writeable_candidates(n: int) -> List[np.ndarray]:
@@ -121,7 +120,7 @@ completion_functions_to_try: Dict[int, Any] = {
 
 def new_atom_position_from_id_list(
         atom_ids: List[int], new_atom_n: int, molecule: vtkMolecule
-) -> Tuple[Optional[Position], Optional[str]]:
+) -> Tuple[Optional[np.ndarray], Optional[str]]:
     """
     Tries all the methods in scine_utilities
     until a possible position is found

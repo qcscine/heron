@@ -1,0 +1,25 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<resources>
+<color name="primaryColor">#000000</color><!-- Interactive text-->
+<color name="primaryLightColor">#90ADD7</color> <!-- None-->
+<color name="secondaryColor">#215CAF</color> <!-- Background color settings options-->
+<color name="secondaryLightColor">#ffffff</color> <!-- Background open / save upon when not chosen-->
+<color name="secondaryDarkColor">#215CAF</color> <!--Background application (all except graph / molecule viewer) -->
+<color name="primaryTextColor">#000000</color><!-- The energy profile plot -->
+<color name="secondaryTextColor">#000000</color> <!-- Unclickable text-->
+<color name="primaryLineColor">#215CAF</color> <!-- Primary line color-->
+<color name="secondaryLineColor">#215CAF</color> <!-- Secondary line color-->
+
+<color name="compoundColor">#1F618D</color>
+<color name="reactionColor">#A93226</color>
+<color name="associationColor">#E1837A</color>
+<color name="flaskColor">#79B8E2</color>
+<color name="structureColor">#3B9056</color>
+<color name="elementaryStepColor">#F5B041</color>
+<color name="borderColor">#000000</color>
+<color name="borderGrayColor">#afafaf</color>
+<color name="edgeColor">#5C5C5C</color>
+<color name="modelTrafoColor">#e9afaf</color><!--not adapted to rest from color scheme-->
+<color name="highlightColor">#d40000</color>
+<color name="grayOutColor">#ececec</color>
+</resources>

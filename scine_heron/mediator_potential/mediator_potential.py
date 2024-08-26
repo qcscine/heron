@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
 Provides the MediatorPotential class.
 """
 import numpy as np
-import typing
+from typing import Any, cast, Dict, List, Optional
 
 from .custom_results import CustomResult
 
@@ -32,6 +32,7 @@ class MediatorPotential:
         self.__atomic_hessians = calculation_result.hessian
         self.__well_center = calculation_result.positions
         self.__charges = calculation_result.atomic_charges
+        self.__bond_orders = calculation_result.bond_orders
         self.__molden_input = calculation_result.molden_input
         self.__settings = calculation_result.settings
 
@@ -44,10 +45,18 @@ class MediatorPotential:
         return self.__molden_input
 
     @property
-    def settings(self) -> typing.Dict[str, typing.Any]:
+    def settings(self) -> Dict[str, Any]:
         return self.__settings
 
+    @property
+    def bond_orders(self) -> Optional[np.ndarray]:
+        return self.__bond_orders
+
     def get_gradients(self, current_positions: np.ndarray) -> np.ndarray:
+        if self.__gradients is None:
+            return np.zeros(shape=current_positions.shape)
+        if self.__atomic_hessians is None:
+            return self.__gradients
         # Returns approximate gradient
         distance = (
             np.array(current_positions).flatten()
@@ -60,6 +69,8 @@ class MediatorPotential:
         return approx_gradients
 
     def get_energy(self, current_positions: np.ndarray) -> float:
+        if self.__atomic_hessians is None:
+            return self.__energy
         # Returns the approx. energy according to the Taylor series
         # E = E0 + grad * (x-x0) + 0.5 * (x-x0)^T * hessian * (x-x0)
         distance = (
@@ -75,9 +86,9 @@ class MediatorPotential:
                 distance,
             )
         )
-        return typing.cast(float, approx_energy)
+        return cast(float, approx_energy)
 
-    def get_atomic_charges(self) -> typing.Optional[typing.List[float]]:
+    def get_atomic_charges(self) -> Optional[List[float]]:
         """Returns the atomic charges that were most recently computed by Sparrow."""
 
         return self.__charges

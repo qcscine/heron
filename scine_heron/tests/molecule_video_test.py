@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -13,13 +13,13 @@ import numpy as np
 import scine_utilities as su
 
 from scine_heron.molecule.molecule_video import MoleculeVideo
-from scine_heron.tests.resources import test_resource_path
+from scine_heron.tests.resources import path_to_test_resources
 from scine_heron.molecule.molecule_widget import MoleculeWidget
 
 
 def test_frame_set() -> None:
     # reference
-    ref = os.path.join(test_resource_path(), "water.trj.xyz")
+    ref = os.path.join(path_to_test_resources(), "water.trj.xyz")
     ref_traj = su.io.read_trajectory(su.io.TrajectoryFormat.Xyz, ref)
     n = 42
     assert len(ref_traj) > n

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import pytest
@@ -49,7 +49,7 @@ def test_create_writeable_candidates_not_same(n_candidates: int) -> None:
 
 
 @pytest.fixture(name="HvsCH4_like_validator", scope="session")  # type: ignore[misc]
-def get_validator(methane_like: vtkMolecule) -> Callable[[Position], bool]:
+def get_validator(methane_like: vtkMolecule) -> Callable[[np.ndarray], bool]:
     return nap._create_molecule_validator(new_n=1, molecule=methane_like)
 
 
@@ -57,7 +57,7 @@ def get_validator(methane_like: vtkMolecule) -> Callable[[Position], bool]:
 def test_create_molecule_validator_false(
     atom_id: int,
     methane_like: vtkMolecule,
-    HvsCH4_like_validator: Callable[[Position], bool],
+    HvsCH4_like_validator: Callable[[np.ndarray], bool],
 ) -> None:
     """
     Checks that the positions of the atoms in the molecule

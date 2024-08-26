@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
 Provides the ElectronicDataWidget class.
 """
+
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
 
 from vtk import (
     vtkRenderer,
@@ -25,8 +28,7 @@ from scine_heron.electronic_data.electronic_data_status_manager import (
 from scine_heron.electronic_data.electronic_data import ElectronicData
 from scine_heron.electronic_data.molden_file_reader import MoldenFileReader
 from scine_heron.settings.settings_status_manager import SettingsStatusManager
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional
+from scine_heron.utilities import write_error_message
 
 
 class ElectronicDataWidget:
@@ -64,15 +66,28 @@ class ElectronicDataWidget:
 
         self.__mol_widget = mol_widget
 
+    def get_electronic_data(self):
+        return self.__electronic_data
+
     def read_molden_input(self, molden_input: str) -> None:
         self.__clear_isosurface()
         self.__electronic_data = self.__reader.read_molden(molden_input)
         self.__data_image_generator = ElectronicDataImageGenerator(
             self.__electronic_data
         )
+
         self.__settings_status_manager.number_of_molecular_orbital = len(
             self.__electronic_data.mo
         )
+
+    # Do not use this function if you do not use autocas
+    # I was/still am just to stupid to understand this
+    # Will fix it in the future
+    def view_orbital(self, mo_index):
+        if self.__data_image_generator is None and mo_index == 0:
+            return
+        if self.__data_image_generator is not None:
+            self.__settings_status_manager.selected_molecular_orbital = mo_index
 
     def view_molecular_orbital(self, molecular_orbital_index: int) -> None:
         if self.__data_image_generator is None and molecular_orbital_index == 0:
@@ -84,6 +99,9 @@ class ElectronicDataWidget:
             if self.__data_image_generator is None:
                 result = self.__mol_widget.single_point_calculation()
                 if not result:
+                    return
+                if not result.molden_input:
+                    write_error_message("Chosen calculator does not support MO output")
                     return
                 self.read_molden_input(result.molden_input)
             self.__clear_isosurface()
@@ -116,13 +134,10 @@ class ElectronicDataWidget:
                 future.add_done_callback(self.__show_mo)
 
     def __get_actual_index(self, orbital_index: int) -> int:
-        """
-        Returns index of orbitals + 1
-        """
         if self.__electronic_data is None:
             raise RuntimeError("Electronic Data has not been setup properly")
         i = 0
-        while self.__electronic_data.mo[i].occupation > 0.0:
+        while self.__electronic_data.mo[i].occupation >= 1.0:
             i += 1
         return i if orbital_index == -1 else i + 1
 
@@ -143,6 +158,7 @@ class ElectronicDataWidget:
         self.__settings_status_manager.info_message = (
             "The molecular orbital has been calculated."
         )
+        return
 
     def __create_actor(
         self, mapper: vtkPolyDataMapper, value: float = 0.05

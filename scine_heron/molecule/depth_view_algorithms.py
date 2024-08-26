@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -117,7 +117,7 @@ class DepthProjectionAlgorithm(VTKPythonAlgorithmBase):  # type: ignore[misc]
         # return True (as an integer) to signal success
         return 1
 
-    def depthremap(self, z: np.array) -> np.array:
+    def depthremap(self, z: np.ndarray) -> np.ndarray:
         return self.zscale * (2.0 / (1 + np.exp(-2 * z / self.zscale)) - 1.0)
 
 

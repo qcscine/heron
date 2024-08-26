@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
+from collections import UserDict
 from typing import Dict, Any
 from PySide2.QtWidgets import QWidget
-from scine_heron.chemoton.dict_option_widget import DictOptionWidget
+
+import scine_database as db
+import scine_utilities as su
+
+from scine_heron.settings.dict_option_widget import DictOptionWidget
 
 
 class TestClass:
@@ -16,6 +21,12 @@ class TestClass:
 
     attr1: str = ""
     attr2: int = 2
+
+
+class InheritanceTest(UserDict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.data["user"] = "defined"
 
 
 def test_set_attributes_to_object() -> None:
@@ -57,11 +68,21 @@ def test_get_widget_data() -> None:
     empty_widget = DictOptionWidget(parent=parent, options={})
     assert empty_widget.get_widget_data() == {}
 
+    sub_dict = {'a': 1, 'b': 0.2, 'c': "str", 'd': True, 'e': [0, 50]}
+
     dict_example = {
         "int": 1,
         "float": 0.2,
         "str": "str",
         "bool": True,
+        "int_list": [0, 20],
+        "float_list": [0.1, 20.53],
+        "str_list": ["3534ed5", "953egf"],
+        "sub_dict": sub_dict,
+        "value_coll": su.ValueCollection(sub_dict),
+        "model": db.Model("a", "b", "c"),
+        "job": db.Job("sleep"),
+        "user": InheritanceTest(sub_dict),
     }
     filled_widget = DictOptionWidget(parent=parent, options=dict_example)
     dict_from_widget = filled_widget.get_widget_data()

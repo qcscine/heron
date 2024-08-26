@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import os
@@ -67,13 +67,15 @@ def view_trajectory(trajectory: su.MolecularTrajectory, theme_path: Optional[Pat
         theme_path = Path(os.path.join(resource_path(), 'theme_dark.xml'))
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     application = QApplication()
-    if os.path.exists(str(theme_path)):
+    css_path = theme_path.with_suffix(".xml")
+    if os.path.exists(theme_path):
         apply_stylesheet(
             application,
-            theme=theme_path,
+            theme=str(theme_path),
+            css_file=css_path,
             invert_secondary=True,
         )
-        config.COLORS = get_theme(theme_path)
+        config.COLORS = get_theme(str(theme_path))
     window = MainVideo(trajectory)
     window.show()
     application.exec_()

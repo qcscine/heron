@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
-from vtk import vtkMolecule
-
 from typing import List, TypeVar, Optional, Callable
+
+import numpy as np
+from vtk import vtkMolecule
 
 from scine_heron.settings.settings_status_manager import SettingsStatusManager
 from scine_heron.edit_molecule.new_atom_positions import new_atom_position_from_id_list
@@ -47,7 +48,7 @@ def build_molecule_with_new_atom_structural_completion(
 ) -> vtkMolecule:
     def structural_completion_strategy(
         molecule: vtkMolecule, new_n: int
-    ) -> Optional[Position]:
+    ) -> Optional[np.ndarray]:
         new_position, method = new_atom_position_from_id_list(
             other_atom_ids, new_n, molecule
         )

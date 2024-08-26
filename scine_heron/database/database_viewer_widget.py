@@ -1,36 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
-from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QMenu,
-                               QTreeWidget, QTreeWidgetItem, QLabel, QLineEdit, QPushButton, QDateTimeEdit)
-from PySide2.QtCore import Qt, QObject, QDate
-from PySide2.QtGui import QFont
+
 from datetime import datetime
 from typing import Any, Optional, Union, Tuple, List, Dict
 from json import dumps
 
-from scine_database import Manager, ID, Structure, ElementaryStep, ElementaryStepType, Label
+from PySide2.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QMenu,
+                               QTreeWidget, QTreeWidgetItem, QLabel, QLineEdit, QPushButton, QDateTimeEdit, QCheckBox)
+from PySide2.QtCore import Qt, QObject, QDate
+from PySide2.QtGui import QFont
+
+import scine_utilities as su
+from scine_database import Manager, ID, Structure, ElementaryStep
 import scine_database as db
+from scine_database.queries import optimized_labels_enums
+from scine_database.concentration_query_functions import query_reaction_flux
+from scine_database.energy_query_functions import check_barrier_height, get_single_barrier_for_elementary_step
 from scine_utilities import AtomCollection
 
 from scine_heron.utilities import datetime_to_query
+from scine_heron.containers.buttons import TextPushButton
 from scine_heron.molecule.molecule_widget import MoleculeWidget
 from scine_heron.database.reaction_compound_widget import AdvancedSettingsWidget
-from scine_heron.database.energy_query_functions import check_barrier_height
-from scine_heron.database.concentration_query_functions import query_reaction_flux
 from scine_heron.database.compound_and_flasks_helper import get_compound_or_flask
-from scine_heron.utilities import copy_text_to_clipboard
+from scine_heron.styling.delegates import CustomLightDelegate
+from scine_heron.utilities import copy_text_to_clipboard, write_error_message, write_info_message
 from scine_heron import get_core_tab
-
-from PySide2.QtWidgets import QCheckBox
+import scine_heron.config as config
+from scine_heron.dependencies.optional_import import importer, is_imported
+JsonSerialization = importer("scine_molassembler", "JsonSerialization")
+AggregateFilterBuilderButton = importer("scine_heron.chemoton.filter_builder", "AggregateFilterBuilderButton")
+DefaultAggregateFilter = importer("scine_chemoton.filters.aggregate_filters", "AggregateFilter")
 
 
 class TreeWidget(QTreeWidget):
     def __init__(self, parent: QObject):
         QTreeWidget.__init__(self, parent)
+        if config.MODE in config.LIGHT_MODES:
+            self.setItemDelegate(CustomLightDelegate())
 
     def contextMenuEvent(self, event):
         self.currentItem().contextMenuEvent(event)
@@ -40,10 +51,10 @@ class TreeWidgetItem(QTreeWidgetItem):
 
     def __init__(self, parent: QObject, info: List[str]):
         QTreeWidgetItem.__init__(self, parent, info, type=QTreeWidgetItem.UserType)
-        self.id_string_list = [label.split('(')[1][:-1] for label in info]
-        self.item_type = info[0].split('(')[0].strip()
+        self.id_string_list = [info[1]]
+        self.item_type = info[0]
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event) -> None:
         menu = QMenu()
         copyid_action = menu.addAction('Copy ID')
         show_in_mol_view = menu.addAction('Move to Molecular Viewer')
@@ -116,6 +127,7 @@ class AggregateTreeWidget(QWidget):
         self.current_agg_id_text = QLineEdit(self)
         self.current_agg_id_text.resize(400, 40)
         self.current_agg_id_text.setText("")
+        self.current_agg_id_text.returnPressed.connect(self.__focus_aggregate_id)  # pylint: disable=no-member
         agg_h_box.addWidget(self.current_agg_id_text)
         self.button_jump_to_agg_id = QPushButton("Jump To ID")
         agg_h_box.addWidget(self.button_jump_to_agg_id)
@@ -136,6 +148,7 @@ class AggregateTreeWidget(QWidget):
         str_h_box.addWidget(self.current_id_text)
         self.button_jump_to_str_id = QPushButton("Jump To ID")
         str_h_box.addWidget(self.button_jump_to_str_id)
+        self.current_id_text.returnPressed.connect(self.__focus_structure_id)  # pylint: disable=no-member
         self.button_jump_to_str_id.clicked.connect(self.__focus_structure_id)  # pylint: disable=no-member
         str_widget.setLayout(str_h_box)
         layout.addWidget(str_widget)
@@ -150,6 +163,7 @@ class AggregateTreeWidget(QWidget):
         self.current_cbor_text = QLineEdit(self)
         self.current_cbor_text.resize(400, 40)
         self.current_cbor_text.setText("")
+        self.current_cbor_text.returnPressed.connect(self.jump_to_cbor)  # pylint: disable=no-member
         cbor_h_box.addWidget(self.current_cbor_text)
         self.button_jump_to_cbor = QPushButton("Jump To CBOR-String")
         cbor_h_box.addWidget(self.button_jump_to_cbor)
@@ -159,9 +173,8 @@ class AggregateTreeWidget(QWidget):
 
         update_h_box = QHBoxLayout()
         update_widget = QWidget()
-        self.button_update = QPushButton("Update")
+        self.button_update = TextPushButton("Update", self.update, shortcut="F5")
         update_h_box.addWidget(self.button_update)
-        self.button_update.clicked.connect(self.update)  # pylint: disable=no-member
         self._query_compounds = True
         self.query_compounds_cbox = QCheckBox("Show Compounds", parent=self)
         self.query_compounds_cbox.setChecked(self._query_compounds)
@@ -171,6 +184,11 @@ class AggregateTreeWidget(QWidget):
         self.query_flasks_cbox.setChecked(False)
         self.query_flasks_cbox.clicked.connect(self._check_query_flasks)  # pylint: disable=no-member
         update_h_box.addWidget(self.query_flasks_cbox)
+        if is_imported(AggregateFilterBuilderButton):
+            self.filter_button = AggregateFilterBuilderButton(parent=self, shortcut="Ctrl+F")
+            update_h_box.addWidget(self.filter_button)
+        else:
+            self.filter_button = None
         update_widget.setLayout(update_h_box)
         layout.addWidget(update_widget)
 
@@ -189,6 +207,7 @@ class AggregateTreeWidget(QWidget):
         self.compounds = self.db_manager.get_collection("compounds")
         self.flasks = self.db_manager.get_collection("flasks")
         self._is_updating = False
+        self._was_updated = False
 
     def _check_query_compounds(self):
         if self.query_compounds_cbox.isChecked():
@@ -203,39 +222,35 @@ class AggregateTreeWidget(QWidget):
             self.query_compounds_cbox.setChecked(True)
 
     def _check_masm_graph(self, aggregate: Union[db.Compound, db.Flask]) -> bool:
-        graph = db.Structure(aggregate.get_centroid(), self.structures).get_graph("masm_cbor_graph")
-        return graph == self.current_cbor_text.text()
+        structure = db.Structure(aggregate.get_centroid(), self.structures)
+        if not structure.has_graph("masm_cbor_graph"):
+            return False
+        if is_imported(JsonSerialization):
+            return JsonSerialization.equal_molecules(structure.get_graph("masm_cbor_graph"),
+                                                     self.current_cbor_text.text())
+        return structure.get_graph("masm_cbor_graph") == self.current_cbor_text.text()
 
     def jump_to_cbor(self):
-        if self._is_updating:
-            return
-        self._is_updating = True
-        items = []
+        if not self._was_updated:
+            self.update()
         query_compounds = self.query_compounds_cbox.isChecked()
         if query_compounds:
-            aggregates = "compounds"
             collection = self.compounds
             it = collection.iterate_all_compounds()
-            allowed_labels = [Label.MINIMUM_OPTIMIZED, Label.USER_OPTIMIZED, Label.SURFACE_OPTIMIZED]
         else:
-            aggregates = "flasks"
             collection = self.flasks
             it = collection.iterate_all_flasks()
-            allowed_labels = [Label.COMPLEX_OPTIMIZED, Label.USER_OPTIMIZED]
+        write_info_message("Searching...")
         for i in it:
             i.link(collection)
             if self._check_masm_graph(i):
-                main = TreeWidgetItem(self.tree, [f"{aggregates.capitalize()} ({str(i.get_id())})"])
-                items.append(main)
-                for sid in i.get_structures():
-                    structure = db.Structure(sid, self.structures)
-                    if structure.get_label() in allowed_labels:
-                        TreeWidgetItem(main, [f"Structure ({str(sid)})"])
+                item_search = str(i.id()), None
+                self._activate_item(item_search)
                 break
-        self.tree.insertTopLevelItems(0, items)
-        if items:
-            self.focus(items[0], None)
-        self._is_updating = False
+        else:
+            write_error_message("CBOR string was not found")
+            return
+        write_info_message("Found entry")
 
     def update(self):
         if self._is_updating:
@@ -244,26 +259,37 @@ class AggregateTreeWidget(QWidget):
         self.tree.clear()
         items = []
         query_compounds = self.query_compounds_cbox.isChecked()
+        self.tree.setColumnCount(2)
         if query_compounds:
             aggregates = "compounds"
             collection = self.compounds
             it = collection.iterate_all_compounds()
-            allowed_labels = [Label.MINIMUM_OPTIMIZED, Label.USER_OPTIMIZED, Label.SURFACE_OPTIMIZED]
         else:
             aggregates = "flasks"
             collection = self.flasks
             it = collection.iterate_all_flasks()
-            allowed_labels = [Label.COMPLEX_OPTIMIZED, Label.USER_OPTIMIZED]
+        allowed_labels = optimized_labels_enums()
+        agg_filter = None if self.filter_button is None else self.filter_button.get_aggregate_filter()
+        have_to_filter: bool = agg_filter is not None and agg_filter is not DefaultAggregateFilter
+        if have_to_filter:
+            agg_filter.initialize_collections(self.db_manager)
         for i in it:
             i.link(collection)
-            main = TreeWidgetItem(self.tree, [f"{aggregates.capitalize()[0:-1]} ({str(i.get_id())})"])
+            if have_to_filter and not agg_filter.filter(i):
+                continue
+            main = TreeWidgetItem(self.tree, [f"{aggregates.capitalize()[0:-1]}", str(i.get_id())])
             items.append(main)
             for sid in i.get_structures():
                 structure = db.Structure(sid, self.structures)
                 if structure.get_label() in allowed_labels:
-                    TreeWidgetItem(main, [f"Structure ({str(sid)})"])
+                    TreeWidgetItem(main, ['Structure', str(sid)])
+        # Fixed column size for first colum,
+        #   because dynamic fit does not account for leaf sizes
+        self.tree.setColumnWidth(0, 150)
+        self.tree.resizeColumnToContents(1)
         self.tree.insertTopLevelItems(0, items)
         self._is_updating = False
+        self._was_updated = True
 
     def focus(self, item: TreeWidgetItem, _):
         if item.childCount() > 0:
@@ -281,58 +307,74 @@ class AggregateTreeWidget(QWidget):
         self.__focus_structure_id(structure_id)
 
     def __focus_structure_id(self, str_id: Optional[str] = None) -> None:
+        if not self._was_updated:
+            write_info_message("Gather database data first")
+            self.update()
         if str_id is None or not str_id:
             str_id = self.current_id_text.text().strip()
-            item_search: Tuple[Union[str, None], Union[str, None]] = (None, None)
-            if not str_id:
+            if not str_id or not self.__id_sanity_check(str_id):
                 return
+            write_info_message("Searching...")
             item_search = None, str_id
             self._activate_item(item_search)
         s = Structure(ID(str_id), self.structures)
-        self.parent().display_molecule(s.get_atoms())
+        self.parent().display_molecule(s.get_atoms(), s.get_charge(), s.get_multiplicity())
 
     def __focus_aggregate_id(self, agg_id: Optional[str] = None) -> None:
+        if not self._was_updated:
+            write_info_message("Gather database data first")
+            self.update()
         if agg_id is None or not agg_id:
             agg_id = self.current_agg_id_text.text().strip()
-            item_search: Tuple[Union[str, None], Union[str, None]] = (None, None)
-            if not agg_id:
-                return
-            if self.query_compounds_cbox.isChecked():
-                aggregates = "compounds"
-                a_type = db.CompoundOrFlask.COMPOUND
-            else:
-                aggregates = "flasks"
-                a_type = db.CompoundOrFlask.FLASK
-            agg = get_compound_or_flask(db.ID(agg_id), a_type, self.compounds, self.flasks)
-            if not agg.exists():
-                print(f"No {aggregates.capitalize()[:-1]} exists with ID {agg_id}")
-                return
-            str_id = str(agg.get_centroid())
-            item_search = agg_id, None
-            self._activate_item(item_search)
+        if not agg_id or not self.__id_sanity_check(agg_id):
+            return
+        if self.query_compounds_cbox.isChecked():
+            aggregates = "compounds"
+            a_type = db.CompoundOrFlask.COMPOUND
+        else:
+            aggregates = "flasks"
+            a_type = db.CompoundOrFlask.FLASK
+        write_info_message("Searching...")
+        agg = get_compound_or_flask(db.ID(agg_id), a_type, self.compounds, self.flasks)
+        if not agg.exists():
+            write_error_message(f"No {aggregates.capitalize()[:-1]} exists with ID {agg_id}")
+            return
+        str_id = str(agg.get_centroid())
+        item_search = agg_id, None
+        self._activate_item(item_search)
         s = Structure(ID(str_id), self.structures)
-        self.parent().display_molecule(s.get_atoms())
+        self.parent().display_molecule(s.get_atoms(), s.get_charge(), s.get_multiplicity())
+
+    @staticmethod
+    def __id_sanity_check(id_: str) -> bool:
+        try:
+            _ = db.ID(id_)
+            return True
+        except RuntimeError:
+            write_error_message(f"The entry '{id_}' is not a valid database ID")
+            return False
 
     def _activate_item(self, item_search: Tuple[Union[str, None], Union[str, None]]) -> None:
         if item_search[0] is None and item_search[1] is None:
             return
-        aggregates = "compounds" if self.query_compounds_cbox.isChecked() else "flasks"
         if item_search[0] is not None:
-            search_str = f"{aggregates.capitalize()} ({item_search[0]})"
-            items = self.tree.findItems(search_str, Qt.MatchFlag.MatchCaseSensitive)  # type: ignore
+            items = self.tree.findItems(item_search[0], Qt.MatchFlag.MatchCaseSensitive, column=1)  # type: ignore
             if not items:
+                write_error_message(f"Entry '{item_search[0]}' was not found")
                 return
         if item_search[1] is not None:
-            search_str = f"Structure ({item_search[1]})"
-            items = self.tree.findItems(search_str, Qt.MatchFlag.MatchCaseSensitive)  # type: ignore
-        if not items:
-            return
+            items = self.tree.findItems(item_search[1], Qt.MatchFlag.MatchCaseSensitive, column=1)  # type: ignore
+            if not items:
+                write_error_message(f"Entry '{item_search[1]}' was not found")
+                return
         current = self.tree.currentItem()
         if current is not None:
             current.setSelected(False)
             current.setExpanded(False)
         self.tree.setCurrentItem(items[0])
+        self.tree.scrollToItem(items[0])
         items[0].setExpanded(True)
+        items[0].setSelected(True)
         self.focus(items[0], None)
 
     def copy_cbor_to_clipboard(self, aggregate_id: str, aggregate_type: str):
@@ -348,7 +390,7 @@ class AggregateTreeWidget(QWidget):
     def center_network_view_on_aggregate(self, aggregate_id: str):
         tab = get_core_tab('network_viewer')
         if tab is not None:
-            tab.jump_to_aggregate_id(aggregate_id)
+            tab.center_on_aggregate(aggregate_id)
 
     def display_in_molecule_viewer(self, structure_id: str):
         structure = db.Structure(db.ID(structure_id), self.structures)
@@ -372,20 +414,17 @@ class ReactionTreeWidget(QWidget):
         self.reactions = self.db_manager.get_collection("reactions")
 
         layout = QVBoxLayout()
-        self.button_update = QPushButton("Update")
-        layout.addWidget(self.button_update)
-        self.button_update.clicked.connect(self.update)  # pylint: disable=no-member
 
         # Selection label and line edit box
         self.reaction_selection_label = QLabel(self)
-        self.reaction_selection_label.setText('Reaction Selection')
+        self.reaction_selection_label.setText('Current Reaction ID')
         self.reaction_selection_label.resize(560, 40)
         layout.addWidget(self.reaction_selection_label)
 
         self.reaction_selection_text = QLineEdit(self)
         self.reaction_selection_text.setText("")
-        self.reaction_selection_text.setToolTip('Any valid pymongo query\n'
-                                                ' e.g.: {"_id": {"$oid": "627ad4ef38b7073df406d2ab"}}\n'
+        self.reaction_selection_text.setToolTip('Any valid reaction ID\n'
+                                                ' e.g.: "627ad4ef38b7073df406d2ab"\n'
                                                 'or a file name if <Reaction Ids from file> is toggled.\n'
                                                 'Note that the file must only contain reaction IDs with one ID per '
                                                 'line.')
@@ -419,6 +458,7 @@ class ReactionTreeWidget(QWidget):
         layout.addLayout(qh_box_layout_texts)
 
         qh_box_layout_toggles = QHBoxLayout()
+
         # optional toggle to read the reaction ids from some file
         self.read_from_file_cbox = QCheckBox("Reaction IDs from file", parent=self)
         self.read_from_file_cbox.setChecked(False)
@@ -443,6 +483,34 @@ class ReactionTreeWidget(QWidget):
 
         layout.addLayout(qh_box_layout_toggles)
 
+        qh_box_update_and_sort = QHBoxLayout()
+        self.button_update = TextPushButton("Update", self.update, shortcut="F5")
+        qh_box_update_and_sort.addWidget(self.button_update)
+
+        self.sort_by_barrier = QCheckBox("Sort by Reaction Barrier Height", parent=self)
+        self.sort_by_barrier.setChecked(False)
+        qh_box_update_and_sort.addWidget(self.sort_by_barrier)
+        layout.addLayout(qh_box_update_and_sort)
+
+        if is_imported(AggregateFilterBuilderButton):
+            self.filter_button = AggregateFilterBuilderButton(parent=self, shortcut="Ctrl+F")
+            qh_box_update_and_sort.addWidget(self.filter_button)
+            self.filter_both_sides_check_box = QCheckBox("Filter both sides", parent=self)
+            self.filter_both_sides_check_box.setChecked(False)
+            self.filter_both_sides_check_box.setToolTip("If checked, the filter will be applied to both sides of the "
+                                                        "reaction.\nIf unchecked, it suffices if one side passes the "
+                                                        "filter.")
+            self.filter_all_reactants_check_box = QCheckBox("Filter all reactants per side", parent=self)
+            self.filter_all_reactants_check_box.setChecked(False)
+            self.filter_all_reactants_check_box.setToolTip(
+                "If checked, the filter will be applied to all reactants per "
+                "side of the reaction.\nIf unchecked, it suffices if one "
+                "reactant per side passes the filter.")
+            qh_box_update_and_sort.addWidget(self.filter_both_sides_check_box)
+            qh_box_update_and_sort.addWidget(self.filter_all_reactants_check_box)
+        else:
+            self.filter_button = None
+
         self._advanced_settings_visible = False
         self._set_up_advanced_settings_widgets(layout)
 
@@ -455,6 +523,7 @@ class ReactionTreeWidget(QWidget):
         self.setLayout(layout)
 
         self._is_updating = False
+        self._was_updated = False
 
     def set_advanced_settings_visible(self) -> None:
         self._advanced_settings_visible = self.advanced_settings_cbox.isChecked()
@@ -479,7 +548,7 @@ class ReactionTreeWidget(QWidget):
         self.set_advanced_settings_visible()
 
     def _get_reaction_selection(self) -> Dict[str, Any]:
-        from json import loads, JSONDecodeError
+        from json import JSONDecodeError
         selection: Dict = {"$and": []}
         custom_selection: Optional[Dict] = None
 
@@ -491,14 +560,16 @@ class ReactionTreeWidget(QWidget):
                 reaction_str_ids = [{"$oid": line.replace("\n", "")} for line in lines]
                 custom_selection = {"_id": {"$in": reaction_str_ids}}
             except OSError:
-                print("Could not open/read file " + self.reaction_selection_text.text())
+                write_error_message("Could not open/read file " + self.reaction_selection_text.text())
         else:
             if self.reaction_selection_text.text():
                 try:
-                    custom_selection = loads(self.reaction_selection_text.text())
+                    # TODO: id only is enough here, don't make it complicated
+                    custom_selection = {"_id": {"$oid": self.reaction_selection_text.text()}}
                 except JSONDecodeError as error:
-                    print("Invalid input string. The string must be convertable to a python dictionary!")
-                    print(error.msg)
+                    write_error_message(
+                        "Invalid input string. The string must be convertable to a Python dictionary!")
+                    write_error_message(error.msg)
         if custom_selection is not None:
             selection["$and"].append(custom_selection)
 
@@ -534,19 +605,82 @@ class ReactionTreeWidget(QWidget):
             return
         self._is_updating = True
         items = []
+        self.tree.setSortingEnabled(False)
+        self.tree.setColumnCount(3)
         selection = self._get_reaction_selection()
         self.advanced_settings_widget.update_settings()
         self.tree.clear()
+        agg_filter = None if self.filter_button is None else self.filter_button.get_aggregate_filter()
+        have_to_filter: bool = agg_filter is not None and agg_filter is not DefaultAggregateFilter
+        if have_to_filter:
+            agg_filter.initialize_collections(self.db_manager)
         for i in self.collection.iterate_reactions(dumps(selection)):
             i.link(self.collection)
             if not self._filter_reaction(i):
                 continue
-            main = TreeWidgetItem(self.tree, [f"Reaction ({str(i.get_id())})"])
+            if have_to_filter:
+                lhs, rhs = i.get_reactants(db.Side.BOTH)
+                lhs_types, rhs_types = i.get_reactant_types(db.Side.BOTH)
+                lhs_is_ok = bool(
+                    all(agg_filter.filter(get_compound_or_flask(lid, ltype, self.compounds, self.flasks))
+                        for lid, ltype in zip(lhs, lhs_types))
+                    if self.filter_all_reactants_check_box.isChecked()
+                    else any(agg_filter.filter(get_compound_or_flask(lid, ltype, self.compounds, self.flasks))
+                             for lid, ltype in zip(lhs, lhs_types))
+                )
+                if not lhs_is_ok and self.filter_both_sides_check_box.isChecked():
+                    continue
+                rhs_is_ok = bool(
+                    all(agg_filter.filter(get_compound_or_flask(rid, rtype, self.compounds, self.flasks))
+                        for rid, rtype in zip(rhs, rhs_types))
+                    if self.filter_all_reactants_check_box.isChecked()
+                    else any(agg_filter.filter(get_compound_or_flask(rid, rtype, self.compounds, self.flasks))
+                             for rid, rtype in zip(rhs, rhs_types))
+                )
+                if not lhs_is_ok and not rhs_is_ok:
+                    continue
+                if not rhs_is_ok and self.filter_both_sides_check_box.isChecked():
+                    continue
+
+            main = TreeWidgetItem(self.tree, ['Reaction', str(i.get_id())])
             items.append(main)
-            for c in i.get_elementary_steps():
-                TreeWidgetItem(main, [f"Elementary Step ({str(c)})"])
-        self.tree.insertTopLevelItems(0, items)
+            if self.sort_by_barrier.isChecked():
+                min_barrier = None
+            for e in i.get_elementary_steps():
+                leaf = TreeWidgetItem(main, ['Elementary Step', str(e)])
+                if self.sort_by_barrier.isChecked():
+                    step = db.ElementaryStep(e)
+                    step.link(self.elementary_steps)
+                    barrier = get_single_barrier_for_elementary_step(
+                        step,
+                        self.advanced_settings_widget.get_model(),
+                        self.structures,
+                        self.properties
+                    )
+                    if barrier is None:
+                        leaf.setText(2, 'None')
+                    else:
+                        leaf.setText(2, f'{barrier:-6.1f}')
+                        if min_barrier is None or min_barrier > barrier:
+                            min_barrier = barrier
+            if self.sort_by_barrier.isChecked():
+                if min_barrier is not None:
+                    main.setText(2, f'{min_barrier:-6.1f}')
+                else:
+                    main.setText(2, 'None')
+        if self.sort_by_barrier.isChecked():
+            self.tree.insertTopLevelItems(0, items)
+            self.tree.setSortingEnabled(True)
+            self.tree.sortItems(2, Qt.AscendingOrder)
+            self.tree.resizeColumnToContents(2)
+        else:
+            self.tree.insertTopLevelItems(0, items)
+        # Fixed column size for first colum,
+        #   because dynamic fit does not account for leaf sizes
+        self.tree.setColumnWidth(0, 200)
+        self.tree.resizeColumnToContents(1)
         self._is_updating = False
+        self._was_updated = False
 
     def _filter_reaction(self, reaction: db.Reaction) -> bool:
         if not self._check_reaction_barrier(reaction):
@@ -560,6 +694,7 @@ class ReactionTreeWidget(QWidget):
         return True
 
     def _check_reaction_barrier(self, reaction: db.Reaction) -> bool:
+        # TODO: replace by correct database call
         return check_barrier_height(reaction, self.db_manager, self.advanced_settings_widget.get_model(),
                                     self.structures, self.properties, self.advanced_settings_widget.get_max_barrier(),
                                     self.advanced_settings_widget.get_min_barrier(),
@@ -611,9 +746,9 @@ class ReactionTreeWidget(QWidget):
     def focus(self, item, _):
         if item.childCount() > 0:
             item = item.child(0)
-        step = ElementaryStep(ID(item.text(0).split('(')[1][:-1]))
+        step = ElementaryStep(ID(item.text(1)))
         step.link(self.elementary_steps)
-        if step.get_type() == ElementaryStepType.BARRIERLESS:
+        if not step.has_transition_state():
             ts_atoms = AtomCollection()
         else:
             ts = Structure(step.get_transition_state())
@@ -731,29 +866,34 @@ class ContentWidget(QWidget):
         self.__layout.addWidget(self.tree)
         self.__mol_widget_cache: List[MoleculeWidget] = [
             MoleculeWidget(
-                parent=self, atoms=AtomCollection()
+                parent=self, atoms=AtomCollection(), disable_modification=True
             )
         ]
         self.mol_widget = self.__mol_widget_cache[0]
         self.__layout.addWidget(self.mol_widget)
         self.setLayout(self.__layout)
 
-    def display_molecule(self, structure):
-        old_widget = self.mol_widget
-        if len(self.__mol_widget_cache) == 0:
-            self.__mol_widget_cache.append(MoleculeWidget(
-                parent=self, atoms=AtomCollection()
-            ))
-        new_widget = self.__mol_widget_cache[0]
-        new_widget.update_molecule(atoms=structure)
-        self.mol_widget = new_widget
-        self.__layout.replaceWidget(old_widget, new_widget)
+    def display_molecule(self, atoms: su.AtomCollection,
+                         charge: Optional[int] = None, multiplicity: Optional[int] = None) -> None:
+        self.__layout.removeWidget(self.mol_widget)
+        self.mol_widget = self.__mol_widget_cache[0]
+        self.mol_widget.update_molecule(atoms=atoms)
+        tooltip = ""
+        if charge is not None:
+            tooltip += f"Charge: {charge}"
+        if multiplicity is not None:
+            if tooltip:
+                tooltip += "; "
+            tooltip += f"Multiplicity: {multiplicity}"
+        if tooltip:
+            self.mol_widget.setToolTip(tooltip)
+        self.__layout.addWidget(self.mol_widget)
 
     def display_molecules(self, lhs, ts, rhs):
         n_views = len(lhs) + 1 + len(rhs)
         for _ in range(n_views - len(self.__mol_widget_cache)):
             self.__mol_widget_cache.append(MoleculeWidget(
-                parent=self, atoms=AtomCollection()
+                parent=self, atoms=AtomCollection(), disable_modification=True
             ))
         if isinstance(self.mol_widget, MoleculeWidget):
             self.__layout.removeWidget(self.mol_widget)

@@ -1,0 +1,2 @@
+-r requirements.txt
+scine_chemoton==4.0.0

@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import List, Any, Tuple, Union, Dict, Set, Optional
 
 import scine_database as db
 import scine_utilities as utils
+from scine_database.concentration_query_functions import query_concentration, query_concentrations
 
-from scine_heron.database.concentration_query_functions import query_concentration, query_concentration_list
 from scine_heron.molecule.molecule_widget import MoleculeWidget
 
 from PySide2.QtWidgets import (
     QWidget,
     QLabel,
-    QComboBox,
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
@@ -25,6 +24,8 @@ from PySide2.QtWidgets import (
 )
 
 from PySide2.QtCore import Qt
+
+from scine_heron.containers.combo_box import BaseBox
 
 
 class DirectedExplorationProgressView(QScrollArea):
@@ -211,7 +212,6 @@ class KineticModelingDrivenExplorationExtractor:
                 if db.CompoundOrFlask(a_type) == db.CompoundOrFlask.COMPOUND:
                     c_id = db.ID(a_str_id)
                     compound = db.Compound(c_id, self._compounds)
-                    centroid = db.Structure(compound.get_centroid(), self._structures)
                     self._keep_track_on_concentration_to_calculation_mapping(a_str_id, i)
 
                     if a_str_id in self._concentrations_to_compounds_map:
@@ -219,12 +219,12 @@ class KineticModelingDrivenExplorationExtractor:
                         final_concentrations = self._concentrations_to_compounds_map[a_str_id][1]
                         concentration_fluxes = self._concentrations_to_compounds_map[a_str_id][2]
                     else:
-                        max_concentrations = query_concentration_list(
-                            self.max_concentration_label, centroid, self._properties)
-                        final_concentrations = query_concentration_list(
-                            self.final_concentration_label, centroid, self._properties)
-                        concentration_fluxes = query_concentration_list(
-                            self.concentration_flux_label, centroid, self._properties)
+                        max_concentrations = query_concentrations(
+                            self.max_concentration_label, compound, self._properties, self._structures)
+                        final_concentrations = query_concentrations(
+                            self.final_concentration_label, compound, self._properties, self._structures)
+                        concentration_fluxes = query_concentrations(
+                            self.concentration_flux_label, compound, self._properties, self._structures)
                         self._concentrations_to_compounds_map[a_str_id] = (max_concentrations, final_concentrations,
                                                                            concentration_fluxes)
                     c_i = self._get_concentration_index_for_calculation(a_str_id, i)
@@ -246,7 +246,7 @@ class DirectedExplorationProgressSettings(QWidget):
         self._comparison_label = "max_concentration"
         self._comparison_threshold = 1e-1
         self.show_only_added_compounds: bool = True
-        self._label_options_cb: Union[None, QComboBox] = None
+        self._label_options_cb: Union[None, BaseBox] = None
         layout = QVBoxLayout()
         self._width = 240
         self.setFixedWidth(self._width)
@@ -262,7 +262,7 @@ class DirectedExplorationProgressSettings(QWidget):
         self._step_mapper_label.setText("Exploration Step Mapper")
         self._qvbox.addWidget(self._step_mapper_label)
 
-        self._mapper_cb = QComboBox()
+        self._mapper_cb = BaseBox()
         for mapper in mapper_options:
             self._mapper_cb.addItem(mapper)
         self._mapper_cb.currentIndexChanged.connect(self.update_step_to_compound_mapper)  # pylint: disable=no-member
@@ -296,7 +296,7 @@ class DirectedExplorationProgressSettings(QWidget):
     def update_label_options(self, layout: QVBoxLayout):
         label_options = self._step_to_compound_mapper.get_comparison_options()
         old_widget = self._label_options_cb
-        self._label_options_cb = QComboBox()
+        self._label_options_cb = BaseBox()
         for o in label_options:
             self._label_options_cb.addItem(o)
         self._label_options_cb.currentIndexChanged.connect(self.update_comparison_index)  # pylint: disable=no-member

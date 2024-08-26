@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
 Provides the HapticInteractorStyle class.
 """
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 from vtk import (
     vtkActor,
     vtkRenderer,
@@ -43,10 +43,10 @@ class HapticInteractorStyle(MouseInteractorStyle):
         mapper: vtkMoleculeMapper,
         haptic_client: Optional[HapticClient],
         actors_dict: Dict[str, vtkActor],
-        selected_atom_callback: Callable[[Optional[int]], None],
+        selected_atom_callback: Callable[[Optional[List[int]]], None],
     ):
         super().__init__(
-            interactor, renderer, mapper, actors_dict, selected_atom_callback
+            interactor, renderer, mapper, actors_dict, selected_atom_callback,
         )
 
         self.__haptic_client = haptic_client
@@ -96,10 +96,10 @@ class HapticInteractorStyle(MouseInteractorStyle):
         Sets the member haptic_picked_atom_id to the picked atom.
         """
         self._pressed_buttons.add("right_haptic")
-        self._settings_status_manager.haptic_picked_atom_id = index if index >= 0 else None
+        self._settings_status_manager.haptic_picked_atom_id = index
 
     def __handle_right_button_release_from_haptic(
-        self, _1: Any = None, _2: Any = None
+        self, _1: Optional[Any] = None, _2: Optional[Any] = None
     ) -> None:
         """
         Resets the member haptic_picked_atom_id to None and update atom position in haptic_device.
@@ -113,8 +113,9 @@ class HapticInteractorStyle(MouseInteractorStyle):
                 self._settings_status_manager.haptic_picked_atom_id,
                 self._molecule.GetAtom(self._settings_status_manager.haptic_picked_atom_id),
             )
-        self._selected_atom_callback(self._settings_status_manager.haptic_picked_atom_id)
-        self._settings_status_manager.haptic_picked_atom_id = None
+            self._selected_atom_callback([self._settings_status_manager.haptic_picked_atom_id])
+        else:
+            self._selected_atom_callback(None)
 
     def _rotate_camera(self, azimuth: Any, elevation: Any) -> None:
         super()._rotate_camera(azimuth, elevation)
@@ -123,16 +124,17 @@ class HapticInteractorStyle(MouseInteractorStyle):
                 self._renderer.GetActiveCamera(), azimuth, elevation
             )
 
-    def _move_atom_by_mouse(self) -> None:
-        super()._move_atom_by_mouse()
+    def _move_atoms_by_mouse(self) -> None:
+        super()._move_atoms_by_mouse()
         if (
             self.__haptic_client is not None
-            and self._settings_status_manager.mouse_picked_atom_id is not None
+            and self._settings_status_manager.mouse_picked_atom_ids is not None
         ):
-            self.__haptic_client.update_atom(
-                self._settings_status_manager.mouse_picked_atom_id,
-                self._molecule.GetAtom(self._settings_status_manager.mouse_picked_atom_id),
-            )
+            for id in self._settings_status_manager.mouse_picked_atom_ids:
+                self.__haptic_client.update_atom(
+                    id,
+                    self._molecule.GetAtom(id),
+                )
 
     def __handle_haptic_move(
         self, pos: Any, azimuth: float, elevation: float, zoom: float
@@ -145,9 +147,14 @@ class HapticInteractorStyle(MouseInteractorStyle):
         last_pos = self.__last_haptic_pos
         self.__last_haptic_pos = pos.x, pos.y, pos.z
 
-        interaction_mode = self._interaction_mode(
-            self._pressed_buttons, self._settings_status_manager.haptic_picked_atom_id
-        )
+        if self._settings_status_manager.haptic_picked_atom_id is not None:
+            interaction_mode = self._interaction_mode(
+                self._pressed_buttons, [self._settings_status_manager.haptic_picked_atom_id]
+            )
+        else:
+            interaction_mode = self._interaction_mode(
+                self._pressed_buttons, None
+            )
 
         if interaction_mode == InteractionMode.ROTATE_CAMERA:
             self._rotate_camera(azimuth, elevation)
@@ -160,12 +167,31 @@ class HapticInteractorStyle(MouseInteractorStyle):
                 last_pos[2] - pos.z,
             )
             self._move_camera(move_pos)
-        elif interaction_mode == InteractionMode.MOVE_ATOM:
+        elif interaction_mode == InteractionMode.MOVE_ATOMS:
             self._settings_status_manager.selected_molecular_orbital = None
             self._settings_status_manager.number_of_molecular_orbital = None
 
             atom = self._molecule.GetAtom(self._settings_status_manager.haptic_picked_atom_id)
+            old_pos = atom.GetPosition()
             atom.SetPosition(pos.x, pos.y, pos.z)
+            distance = [pos.x - old_pos[0], pos.y - old_pos[1], pos.z - old_pos[2]]
+            if (
+                self._settings_status_manager.mouse_picked_atom_ids is not None
+                and len(self._settings_status_manager.mouse_picked_atom_ids) > 1
+                and (
+                    self._settings_status_manager.haptic_picked_atom_id
+                    in self._settings_status_manager.mouse_picked_atom_ids
+                )
+            ):
+                for atom_id in self._settings_status_manager.mouse_picked_atom_ids:
+                    if atom_id is not self._settings_status_manager.haptic_picked_atom_id:
+                        atom = self._molecule.GetAtom(atom_id)
+                        old_pos = atom.GetPosition()
+                        atom.SetPosition(
+                            old_pos[0] + distance[0],
+                            old_pos[1] + distance[1],
+                            old_pos[2] + distance[2],
+                        )
             self._render()
         else:
             self._render()

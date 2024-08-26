@@ -1,0 +1,87 @@
+QPushButton {{
+color: "#ffffff";
+text-transform: none;
+background-color: "#215CAF";
+border-color: "#215CAF";
+}}
+QPushButton:hover {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateTimeEdit, QTreeWidget{{
+color: "#ffffff";
+}}
+QTreeView {{
+color: "#ffffff";
+}}
+QTreeView::item {{
+color: "#ffffff";
+}}
+QTreeView:hover {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QTreeView:active {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QTreeView:focus {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QTreeView::item:hover {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QTreeWidget::item {{
+color: "#ffffff";
+/* requires other image, for different modes */
+border-color: "#ffffff";
+}}
+QComboBox:hover {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QComboBox:active {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QComboBox:focus {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QComboBox::current {{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QComboBox QAbstractItemView::item:hover {{
+background-color: "#4D7DBF";
+color: "#ffffff";
+}}
+QComboBox::item {{
+color: "#ffffff";
+}}
+QStandardItem {{
+color: "#ffffff";
+background-color: 'red';
+}}
+QLineEdit:pressed, QTextEdit:pressed, QSpinBox:pressed, QDoubleSpinBox:pressed, QComboBox:pressed, QDateTimeEdit:pressed{{
+color: "#ffffff";
+}}
+QLineEdit:hover, QTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QDateTimeEdit:hover, QTreeWidget:hover, QComboBox::item:hover, QTreeWidget::item:hover{{
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QToolBar {{
+border-color: "#215CAF";
+}}
+QToolTip {{
+color: "#ffffff";
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}
+QToolTip {{
+color: "#ffffff";
+background-color: "#4D7DBF";
+border-color: "#4D7DBF";
+}}

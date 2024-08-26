@@ -1,34 +1,53 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
+
+import copy
 from typing import Dict, Any, List, Union, Tuple
+import datetime
+import time
+import networkx as nx
+from pathlib import Path
 
 import scine_database as db
+from scine_database.energy_query_functions import get_energy_change, get_barriers_for_elementary_step_by_type
 from scine_heron.multithread import Worker
-from scine_heron.database.energy_query_functions import get_energy_change
+
+from scine_heron.containers.buttons import TextPushButton
+from scine_heron.containers.wrapped_label import WrappedLabel
+from scine_heron.toolbar.io_toolbar import ToolBarWithSaveLoad
+from scine_heron.statusbar.status_bar import StatusBar
+from scine_heron.io.file_browser_popup import get_save_file_name, get_load_file_name
+from scine_heron.settings.class_options_widget import ClassOptionsWidget, CompoundCostOptionsWidget
+from scine_heron.containers.without_wheel_event import NoWheelDoubleSpinBox
+from scine_heron.settings.dict_option_widget import DictOptionWidget
+from scine_heron.settings.docstring_parser import DocStringParser
+
 from scine_heron.database.graphics_items import Compound, Pathinfo, Reaction
-from scine_heron.database.graph_build_pathfinder import Pathfinder as pf
 from scine_heron.database.reaction_compound_view import ReactionAndCompoundView, ReactionAndCompoundViewSettings
-from scine_heron.database.compound_flask_helpers import get_compound_or_flask, aggregate_type_from_string
+from scine_heron.database.path_energy_levels import PathLevelWidget
+
+
+from scine_chemoton.gears.pathfinder import Pathfinder as pf
 
 from PySide2.QtWidgets import (
+    QGraphicsItem,
+    QGraphicsPathItem,
     QWidget,
     QCheckBox,
     QGraphicsView,
     QVBoxLayout,
     QHBoxLayout,
     QGraphicsScene,
-    QComboBox,
     QLineEdit,
-    QPushButton,
     QLabel,
-    QScrollArea
+    QScrollArea,
 )
-from PySide2.QtGui import QPainterPath, QGuiApplication
-from PySide2.QtCore import Qt, QPoint, QTimer, QTimeLine, QThreadPool, SignalInstance
+from PySide2.QtGui import QPainterPath, QGuiApplication, QPainter
+from PySide2.QtCore import Qt, QPoint, QTimer, QThreadPool, SignalInstance
 
 
 class CustomQScrollArea(QScrollArea):
@@ -43,18 +62,18 @@ class CustomQScrollArea(QScrollArea):
 
 
 class GraphTravelWidget(QWidget):
-    def __init__(self, parent: QWidget, db_manager: db.Manager) -> None:
+    def __init__(self, parent: QWidget, db_manager: db.Manager, model: db.Model) -> None:
         self.window_width = 1440
         self.window_height = 810
         self.scene_object = QGraphicsScene(0, 0, self.window_width, self.window_height)
         super(GraphTravelWidget, self).__init__(parent=parent)
         self.db_manager = db_manager
 
-        layout_main = QVBoxLayout()
-
+        outer_layout_main = QVBoxLayout()
+        inner_layout_main = QVBoxLayout()
         layout = QHBoxLayout()
         self.graph_travel_view = GraphTravelView(self, self.db_manager)
-        self.settings = TraversalSettings(self, self.graph_travel_view)
+        self.settings = TraversalSettings(self, self.graph_travel_view, model)
         self.graph_travel_view.set_settings_widget(self.settings)
 
         self.settings_scroll_area = CustomQScrollArea()
@@ -65,33 +84,29 @@ class GraphTravelWidget(QWidget):
         layout.addWidget(self.graph_travel_view)
         layout.addWidget(self.settings_scroll_area)
 
-        layout_main.addLayout(layout)
+        inner_layout_main.addLayout(layout)
+        inner_layout_main.setContentsMargins(9, 9, 9, 9)  # Default padding
 
-        # Attempt of a loading bar ...
+        self.status_bar = StatusBar(self)
+        self.settings.set_status_bar(self.status_bar)
+        self.status_bar.update_status("Status:" + 4 * " " + "Ready", timer=None)
+
+        outer_layout_main.addLayout(inner_layout_main)
+        # Status bar
         layout_bottom = QHBoxLayout()
-        status_label = QLabel(self)
-        status_label.setText("Status:")
-        status_label.setFixedSize(80, 20)
-        layout_bottom.addWidget(status_label)
+        layout_bottom.addWidget(self.status_bar)
 
-        self.status_indicator = QLabel(self)
-        self.status_indicator.setText("Ready")
-        self.status_indicator.resize(240, 20)
-        self.settings.set_status_widget(self.status_indicator)
-        layout_bottom.addWidget(self.status_indicator)
+        outer_layout_main.addLayout(layout_bottom)
+        outer_layout_main.setContentsMargins(0, 0, 0, 0)  # Remove padding
 
-        spacefill = QLabel(self)
-        spacefill.resize(900, 20)
-        layout_bottom.addWidget(spacefill)
+        self.setLayout(outer_layout_main)
 
-        layout_main.addLayout(layout_bottom)
-
-        self.setLayout(layout_main)
-
-        # self.scene_object.update()
         self.view = QGraphicsView(self.scene_object)
-        self.view.setLayout(layout_main)
+        self.view.setLayout(outer_layout_main)
         self.view.setWindowTitle("Graph Traversal")
+        # rendering smoother lines and edges of nodes
+        self.view.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+
         self.view.show()
 
 
@@ -106,14 +121,14 @@ class GraphTravelView(ReactionAndCompoundView):
         self.line_items: Dict[str, Any] = {}
 
         self._curve_width, self._curve_height, self._curve_angle, self._curve_arc_length = 20, 20, 30, 60
+        self._path_window = 140
         self._currently_plotting = False
 
-        self.timer: Union[QTimeLine, None] = None
-        self.frames: Union[int, None] = None
         self.compound_start: str = ""
         self.compound_stop: str = ""
 
         self.pathinfo_list: List[Pathinfo] = []
+        self._graph: nx.DiGraph = None
 
         # db-info of selected compound
         self._compound_collection = self.db_manager.get_collection("compounds")
@@ -122,11 +137,6 @@ class GraphTravelView(ReactionAndCompoundView):
         self._elementary_step_collection = self.db_manager.get_collection("elementary_steps")
         self._property_collection = self.db_manager.get_collection("properties")
         self._structure_collection = self.db_manager.get_collection("structures")
-
-    def __getitem__(self, i):
-        # get information of database
-        # to make subscriptable
-        return f"{i}"
 
     def remove_line_items(self):
         for line in self.line_items.values():
@@ -176,15 +186,14 @@ class GraphTravelView(ReactionAndCompoundView):
         else:
             self.verticalScrollBar().wheelEvent(event)
 
-    def plot_graph_travel(self, source: str, target: str, paths_data: List[Tuple[List[str], List[int], float]]):
+    def plot_paths(self,
+                   paths_excluding_rxn_double_cross: List[Tuple[List[str], float]],
+                   paths_including_rxn_double_cross: List[Tuple[List[str], float]],
+                   true_sight: bool):
         if self._currently_plotting:
             return
         self._currently_plotting = True
-        # Create singular timer for all added animated items
-        self.timer = QTimeLine(1000)
-        self.frames = 40
-        self.timer.setFrameRange(0, self.frames)
-        # Clear scene
+        # # # Remove old items from current scene
         self.remove_line_items()
         self.remove_compound_items()
         self.remove_reaction_items()
@@ -192,119 +201,216 @@ class GraphTravelView(ReactionAndCompoundView):
         self.scene_object.update()
 
         # given input information
-        self.compound_stop = target
-
-        # number of possible path
-        number_paths = len(paths_data)
-        cid_type = ""
-        # loop over paths
-        for path_data_index in range(number_paths):
-            reaction_before = 0
-            if path_data_index == 0:
-                self.__build_pathinfo_item(
-                    reaction_before - 3 * 70,
-                    (path_data_index - number_paths) * 140 - 50,
-                    text="Number\nLength")
-            # loop over reactions in path
-            for rxn_index in range(len(paths_data[path_data_index][0])):
-                if rxn_index == 0:
-                    self.compound_start = source
-                    compound_collection = self.db_manager.get_collection("compounds")
-                    source_type = "compound" if compound_collection.has_compound(db.ID(source)) else "flask"
-                    cid_string, cid_type = self.graph_travel(
-                        self.compound_start, source_type, paths_data[path_data_index],
-                        rxn_index, path_data_index + 1, number_paths, reaction_before)
-                else:
-                    cid_string, cid_type = self.graph_travel(
-                        cid_string, cid_type, paths_data[path_data_index],
-                        rxn_index, path_data_index + 1, number_paths, reaction_before)
-
-                reaction_before += 1
+        assert paths_including_rxn_double_cross
+        assert self.settings
+        path_row = 0
+        # # # Paths excluding double rxn crossing are easier to interpret for the operator
+        if true_sight or len(paths_excluding_rxn_double_cross) == 0:
+            for path in paths_including_rxn_double_cross:
+                path_rank = self.settings._first_index_double_rxns
+                self.construct_single_path_objects(path[0], path_rank, path_row, path[1])
+                path_row += 1
+        else:
+            for path in paths_excluding_rxn_double_cross:
+                path_rank = self.settings._first_index_no_double_rxns
+                self.construct_single_path_objects(path[0], path_rank, path_row, path[1])
+                path_row += 1
 
         # move nodes above lines
         self.move_to_foreground(self.compounds)
         self.move_to_foreground(self.reactions)
 
-        self.timer.start()
-        self._currently_plotting = False
         # Bounding rectangle around current scene
         rect = self.scene().itemsBoundingRect()
         self.scene().setSceneRect(rect)
         # Fit scene rectangle in view and center on rectangle center
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
         self.centerOn(self.sceneRect().center().x(), self.sceneRect().center().y() - 20)
+        self._currently_plotting = False
 
-    def graph_travel(self,
-                     cid_string: str,
-                     cid_type: str,
-                     path_data: Tuple[List[str],
-                                      List[int],
-                                      float],
-                     rxn_index: int,
-                     path_count: int,
-                     total_path_number: int,
-                     reaction_before: int):
+    def construct_single_path_objects(self, path, path_rank, path_row_index, path_length):
+        widget_y_position = path_row_index * self._path_window
+        # Require pathfinder graph, only connectivity
+        path_graph = self.__construct_path_graph(path)
+        path_graph_positions = self.__determine_node_positions(path, path_graph, widget_y_position)
+        # NOTE: Access x pos value better
+        # Build path info (rank and length)
+        path_rank += path_row_index + 1
+        path_length = round(path_length, 2)
+        self.__build_pathinfo_item(
+            - 6 * 70,
+            widget_y_position,
+            path, path_rank, path_length,
+            text="Number\nLength")
+        text_info = '#' + str(path_rank) + "\n" + str(path_length)
+        self.__build_pathinfo_item(-3 * 70, widget_y_position, path, path_rank, path_length, text=text_info)
 
-        # Split path data into reaction_list, reaction_side_list and path_length
-        reaction_list = path_data[0]
-        reaction_side_list = path_data[1]
-        path_length = path_data[2]
+        # loop over positions and draw rxn nodes, edges and aggregates
+        for node, position in path_graph_positions.items():
+            # Draw Rxn Nodes and edges
+            if ";0;" in node or ";1;" in node:
+                rxn = db.Reaction(db.ID(node.split(";")[0]), self._reaction_collection)
+                side = int(node.split(";")[1])
+                rxn_item = self.__build_reaction_item(position[0], position[1], rxn, side)
+                # Draw incoming edges of rxn node
+                for e_count, edge in enumerate(path_graph.in_edges(node)):
+                    line_id = "_".join(list(edge)) + "_" + str(e_count) + "_" + str(path_row_index)
+                    edge_item = self.__build_edge(QPoint(path_graph_positions[edge[0]][0],
+                                                         path_graph_positions[edge[0]][1]),
+                                                  rxn_item.incoming())
+                    self.line_items[line_id] = edge_item
+                # Draw outgoing edges of rxn node
+                for e_count, edge in enumerate(path_graph.out_edges(node)):
+                    line_id = "_".join(list(edge)) + "_" + str(e_count) + "_" + str(path_row_index)
+                    edge_item = self.__build_edge(rxn_item.outgoing(),
+                                                  QPoint(path_graph_positions[edge[1]][0],
+                                                         path_graph_positions[edge[1]][1]))
+                    self.line_items[line_id] = edge_item
+            else:
+                # Draw Aggregate Nodes
+                node_stripped = node.split(";")[0]
+                if self._graph.nodes(data=True)[node_stripped]['type'] == db.CompoundOrFlask.COMPOUND.name:
+                    a_type = db.CompoundOrFlask.COMPOUND
+                    aggregate = db.Compound(db.ID(node_stripped), self._compound_collection)
+                else:
+                    a_type = db.CompoundOrFlask.FLASK
+                    aggregate = db.Flask(db.ID(node_stripped), self._flask_collection)
 
-        reactions_id = []
-        length_reaction_list = len(reaction_list)
+                self.__build_compound_item(position[0], position[1], aggregate, a_type)
 
-        # **********
-        # Compound A
-        # **********
-        compound_a_type = aggregate_type_from_string(cid_type)
-        compound_a = get_compound_or_flask(db.ID(cid_string), compound_a_type,
-                                           self._compound_collection, self._flask_collection)
+    def __construct_path_graph(self, path: List[str]) -> nx.DiGraph:
+        # Derive edges from path
+        path_edges = [(path[i], path[i + 1]) for i in range(0, len(path) - 1)]
+        path_graph = nx.DiGraph()
+        for node in path:
+            path_graph.add_node(node)
+        for edge in path_edges:
+            path_graph.add_edge(edge[0], edge[1], weight=1.0)
 
-        # 100px per graph (vertical) + 40 padding
-        # 140px compound to compound per reaction (horizontal)
-        pos_y_comp_a = (path_count - total_path_number) * 140 - 50  # center in own 100px, global center around 0
-        pos_x_comp_a = reaction_before * 140
+        r_counter = 0
+        p_counter = 0
+        for rxn_node_index, node in enumerate([filtered_node for filtered_node in path if ";" in filtered_node]):
+            # Add incoming reactants to complete path graph
+            for edge in self._graph.in_edges(node):
+                if edge != path_edges[2 * rxn_node_index]:
+                    reactant_node = edge[0] + ";r" + str(r_counter) + ";"
+                    path_graph.add_node(reactant_node)
+                    path_graph.add_edge(reactant_node, node, weight=1.0)
+                    r_counter += 1
+            # Add outgoing products to complete path graph
+            for edge in self._graph.out_edges(node):
+                if edge != path_edges[2 * rxn_node_index + 1]:
+                    product_node = edge[1] + ";p" + str(p_counter) + ";"
+                    path_graph.add_node(product_node)
+                    path_graph.add_edge(node, product_node, weight=1.0)
+                    p_counter += 1
 
-        if cid_string == self.compound_start:
-            assert self.settings
-            text_info = '#' + str(self.settings._first_path_index + path_count) + "\n" + str(round(path_length, 2))
-            self.__build_pathinfo_item(pos_x_comp_a - 3 * 70, pos_y_comp_a, text=text_info)
-            _, _ = self.__build_compound_item(pos_x_comp_a, pos_y_comp_a, compound_a, compound_a_type)
+        return path_graph
 
-        reaction_k = db.Reaction(db.ID(reaction_list[rxn_index]), self._reaction_collection)
-        reaction_incoming_side_k = reaction_side_list[rxn_index]
-        # Check, is selected compound on rhs/lhs of which reaction and take this reaction
-        reactions_id.append(reaction_k.id().string())
-        # Side of compound A for reaction is given by reaction_incoming_side_k
-        xhs = db.Side.RHS if reaction_incoming_side_k == 1 else db.Side.LHS
-        # *********
-        # Reaction
-        # *********
-        # draw associated reaction
-        pos_x_reaction = pos_x_comp_a + 70
-        pos_y_reaction = pos_y_comp_a
+    @staticmethod
+    def __construct_model_string(model: db.Model) -> str:
+        model_string = model.method
+        if model.basis_set and model.basis_set.lower() != "none":
+            model_string += "/" + model.basis_set
+        if model.solvation and model.solvation.lower() != "none" and model.solvent.lower() != "any":
+            model_string += "(" + model.solvent + ")"
+        return model_string
 
-        # reaction = db.Reaction(db.ID(reactions_id[0]), reaction_collection)
-        reaction_type = db.ElementaryStep(reaction_k.get_elementary_steps()[
-                                          0], self._elementary_step_collection).get_type()
-        if xhs == db.Side.RHS:
-            reaction_item = Reaction(
-                pos_x_reaction, pos_y_reaction, rot=1, pen=self.reaction_pen,
-                brush=self.get_reaction_brush(reaction_type)
-            )
-            side = reaction_item.rhs()
-        elif xhs == db.Side.LHS:
-            reaction_item = Reaction(
-                pos_x_reaction, pos_y_reaction, pen=self.reaction_pen, brush=self.get_reaction_brush(reaction_type)
-            )
-            side = reaction_item.lhs()
+    @staticmethod
+    def __determine_node_positions(path: List[str],
+                                   path_graph: nx.DiGraph, path_y_pos: float) -> Dict[str, Tuple[float, float]]:
+        positions = {}
+        path_edges = [(path[i], path[i + 1]) for i in range(0, len(path) - 1)]
+        # NOTE: maybe set this somewhere better
+        x_shift = 35.0
+        y_shift = 25.0
+
+        path_node_x_pos = 0.0
+        for node in path:
+            positions[node] = (path_node_x_pos, path_y_pos)
+            path_node_x_pos += x_shift * 2
+
+        reactant_edges = []
+        prodcut_edges = []
+        for rxn_node_index, node in enumerate([filtered_node for filtered_node in path if ";" in filtered_node]):
+            # Position of reactants
+            # Count minus one due to path
+            for in_count, edge in enumerate(path_graph.in_edges(node)):
+                if edge != path_edges[2 * rxn_node_index]:
+                    r_node = edge[0]
+                    positions[r_node] = (positions[node][0] - x_shift,
+                                         positions[node][1] - y_shift * (in_count))
+                    reactant_edges.append((r_node, node))
+
+            # Position of products
+            for out_count, edge in enumerate(path_graph.out_edges(node)):
+                if edge != path_edges[2 * rxn_node_index + 1]:
+                    p_node = edge[1]
+                    positions[p_node] = (positions[node][0] + x_shift,
+                                         positions[node][1] + y_shift * (out_count))
+                    prodcut_edges.append((node, p_node))
+
+        return positions
+
+    # # # START BUILD ITEM FUNCTIONS
+
+    def __build_compound_item(self, x: int, y: int, db_compound: Union[db.Compound, db.Flask],
+                              a_type: db.CompoundOrFlask) -> Tuple[Compound, str]:
+        compound_item = Compound(x, y, pen=self.compound_pen, brush=self.get_aggregate_brush(a_type))
+        compound_item.db_representation = db_compound
+        cid_string = db_compound.id().string()
+        self.__bind_functions_to_object(compound_item)
+        self.add_to_compound_list(compound_item)
+        self.scene_object.addItem(compound_item)
+        return compound_item, cid_string
+
+    def __build_reaction_item(self, x: int, y: int, reaction: db.Reaction, side: int):
+        assert self.settings
+        assert self.settings.pathfinder  # mypy ...
+        # Include structure model
+        if self.settings.pathfinder.options.use_structure_model:
+            structure_model = self.settings.pathfinder.options.structure_model
+            if not isinstance(structure_model, db.Model):
+                raise RuntimeError("Structure model not set")
         else:
-            raise RuntimeError("The reaction side must be LHS or RHS.")
-        reaction_item.db_representation = reaction_k
-        es = db.ElementaryStep(reaction_k.get_elementary_steps()[0], self._elementary_step_collection)
+            structure_model = self.settings.pathfinder.options.model
+        # Get elementary step from graph or database
+        es_from_graph = None
+        node_id = reaction.id().string() + ";" + str(side) + ";"
+        if "elementary_step_id" in self._graph.nodes(data=True)[node_id]:
+            es_id = db.ID(
+                self._graph.nodes(data=True)[node_id]["elementary_step_id"])
+            es_from_graph = db.ElementaryStep(es_id, self._elementary_step_collection)
+
+        if es_from_graph is None:
+            es, barriers = self._get_elementary_step_of_reaction_from_db(
+                reaction,
+                self.settings.pathfinder.options.model,
+                structure_model)
+        else:
+            es = es_from_graph
+            # Get barrier of ES
+            barriers = get_barriers_for_elementary_step_by_type(
+                es,
+                "electronic_energy",
+                self.settings.pathfinder.options.model,
+                self._structure_collection,
+                self._property_collection)
+        assert es
+        reaction_item = Reaction(
+            x, y, pen=self.reaction_pen,
+            brush=self.get_reaction_brush(es.get_type()),
+            # invert direction if side is 1
+            invert_direction=bool(side)
+        )
+        reaction_item.db_representation = reaction
+        reaction_item.assigned_es_id = es.id()
+
         struct = db.Structure(es.get_reactants()[0][0], self._structure_collection)
         reaction_item.energy_difference = get_energy_change(
             es, "electronic_energy", struct.get_model(), self._structure_collection, self._property_collection)
+        if barriers[0] is not None and barriers[1] is not None:
+            reaction_item.set_barriers(barriers)
         if es.has_spline():
             reaction_item.spline = es.get_spline()
 
@@ -312,162 +418,117 @@ class GraphTravelView(ReactionAndCompoundView):
         self.add_to_reaction_list(reaction_item)
         self.scene_object.addItem(reaction_item)
 
-        # drawing path from reaction to compound A
-        self.__draw_lines(reaction_k, xhs, cid_string, side)
+        return reaction_item
 
-        # ********************
-        # Compound A hanging
-        # ********************
-        # determine further hanging compounds beside compound A
-        reactants = reaction_k.get_reactants(xhs)[0] if xhs == db.Side.LHS else reaction_k.get_reactants(xhs)[1]
-        reactant_types = reaction_k.get_reactant_types(xhs)[0] if xhs == db.Side.LHS\
-            else reaction_k.get_reactant_types(xhs)[1]
+    def __build_pathinfo_item(self, x: int, y: int, path: List[Any], path_rank: int, path_length: float, text: str):
+        pathinfo_item = Pathinfo(x, y, path, path_rank, path_length, text)
+        pathinfo_item.bind_mouse_double_click_function(self.path_info_mouse_double_press)
 
-        # drawing hanging compounds
-        n_on_a_side: int = len(reactants) - 1
-        current_index_on_a_side: int = 0
-        for a_id, a_type in zip(reactants, reactant_types):
-            if a_id != compound_a.id():
-                compound_h = get_compound_or_flask(a_id, a_type, self._compound_collection,
-                                                   self._flask_collection)
-
-                pos_x_compound_a_beside = pos_x_comp_a + 20
-                pos_y_compound_a_beside = pos_y_comp_a + (30 + 60 * int((current_index_on_a_side / n_on_a_side)))
-
-                _, cid_string_hang = self.__build_compound_item(
-                    pos_x_compound_a_beside, pos_y_compound_a_beside, compound_h, a_type
-                )
-
-                # drawing path from reaction to compound hanging
-                self.__draw_curves(reaction_k, len(reactants), cid_string_hang, side)
-                current_index_on_a_side += 1
-
-        # ***********************
-        # Compound Z and Compound Z hanging
-        # ***********************
-        # switch xhs for drawing edge at other side of reaction
-        if xhs == db.Side.RHS:
-            xhs = db.Side.LHS
-            side = reaction_item.lhs()
-        elif xhs == db.Side.LHS:
-            xhs = db.Side.RHS
-            side = reaction_item.rhs()
-
-        # determine further hanging compounds beside compound Z
-        reactants = reaction_k.get_reactants(xhs)[0] if xhs == db.Side.LHS else reaction_k.get_reactants(xhs)[1]
-        reactant_types = reaction_k.get_reactant_types(xhs)[0] if xhs == db.Side.LHS\
-            else reaction_k.get_reactant_types(xhs)[1]
-
-        # Position the compound on the RHS of the previous reaction.
-        # We must place one compound in the center between the previous and the next reaction,
-        # and all other compounds on the sides.
-        central_compound_id = db.ID(self.compound_stop)
-        final_target_on_rhs = central_compound_id in reactants
-        if rxn_index < (length_reaction_list - 1):
-            # not the last reaction. At least one more to go!
-            reaction_kp1 = db.Reaction(db.ID(reaction_list[rxn_index + 1]), self._reaction_collection)
-            reaction_kp1_side = reaction_side_list[rxn_index + 1]
-            central_compound_id = self.__get_next_central_compound(reactants, reaction_kp1, reaction_kp1_side)
-        elif rxn_index >= (length_reaction_list - 1) and not final_target_on_rhs:
-            raise RuntimeError("Invalid reaction path! Reaction path does not end in the target species.")
-        central_compound_type = reactant_types[reactants.index(central_compound_id)]
-        central_compound_type_str = "compound" if central_compound_type == db.CompoundOrFlask.COMPOUND else "flask"
-        n_on_z_side: int = len(reactants) - 1
-        current_index_on_z_side: int = 0
-        for a_id, a_type in zip(reactants, reactant_types):
-            if a_id != central_compound_id:
-                compound_h_after = get_compound_or_flask(
-                    a_id, a_type, self._compound_collection, self._flask_collection)
-
-                pos_x_comp_z = pos_x_comp_a + 120
-                pos_y_comp_z = pos_y_comp_a - (30 + 60 * int(current_index_on_z_side / n_on_z_side))
-
-                _, cid_string = self.__build_compound_item(
-                    pos_x_comp_z, pos_y_comp_z, compound_h_after, a_type
-                )
-
-                # drawing path from reaction to compound Z hanging
-                self.__draw_curves_after(reaction_k, len(reactants), cid_string, side)
-                current_index_on_z_side += 1
-            else:
-                # We arrived at the target/central compound. Set it to the center.
-                compound_h_after = get_compound_or_flask(
-                    a_id, a_type, self._compound_collection, self._flask_collection)
-
-                _, cid_string = self.__build_compound_item(
-                    pos_x_comp_a + 140, pos_y_comp_a, compound_h_after, a_type
-                )
-                # drawing path from reaction to compound Z
-                self.__draw_lines(reaction_k, xhs, cid_string, side)
-        return central_compound_id.string(), central_compound_type_str
-
-    @staticmethod
-    def __get_next_central_compound(rhs_reactants: List[db.ID],
-                                    next_reaction: db.Reaction,
-                                    reaction_kp1_side: int) -> db.ID:
-        next_reactants = next_reaction.get_reactants(db.Side.BOTH)
-        for a_id in rhs_reactants:
-            if a_id in next_reactants[reaction_kp1_side]:
-                return a_id
-        raise RuntimeError(
-            next_reaction.id().string() +
-            ": Invalid reaction path detected. The reaction path does not connect a consecutive set of"
-            " compounds.")
-
-    def __build_compound_item(self, x: int, y: int, db_compound: Union[db.Compound, db.Flask],
-                              a_type: db.CompoundOrFlask) -> Tuple[Compound, str]:
-        compound_item = Compound(x, y, pen=self.compound_pen, brush=self.get_aggregate_brush(a_type))
-        s = db.Structure(db_compound.get_centroid(), self._structure_collection)
-        compound_item.db_representation = db_compound
-        compound_item.structure = s.get_atoms()
-        cid_string = db_compound.id().string()
-        self.__bind_functions_to_object(compound_item)
-        self.add_to_compound_list(compound_item)
-        # self.compounds[cid_string] = compound_item
-        self.scene_object.addItem(compound_item)
-        return compound_item, cid_string
-
-    def __build_pathinfo_item(self, x: int, y: int, text: str):
-        pathinfo_item = Pathinfo(x, y, text)
         self.scene_object.addItem(pathinfo_item)
         self.pathinfo_list.append(pathinfo_item)
 
-    def __draw_lines(self, reaction, xhs, cid, side) -> None:
-        a = len(self.line_items)
-        reactants = reaction.get_reactants(xhs)[0] if xhs == db.Side.LHS else reaction.get_reactants(xhs)[1]
-        for j in range(len(reactants)):
-            oid = reaction.id().string()
-            side_point_a = QPoint(self.compounds[cid][-1].center())
-            path = QPainterPath(side)
-            path.lineTo(side_point_a)
-            lid = cid + "_" + oid + "_" + str(j) + "_" + str(a)
-            self.line_items[lid] = self.scene_object.addPath(path, pen=self.path_pen)
+    def __build_edge(self, start: QPoint, end: QPoint):
+        path = QPainterPath(start)
+        path.lineTo(end)
+        # ID must be unique for scene!
+        edge_item = QGraphicsPathItem(path)
+        edge_item.setPen(self.path_pen)
+        # ID must be unique for scene!
+        self.scene_object.addItem(edge_item)
+        return edge_item
 
-    def __draw_curves(self, reaction, n_besides: int, cid, side) -> None:
-        a = len(self.line_items)
-        for j in range(n_besides):
-            oid = reaction.id().string()
-            side_point_hang = QPoint(self.compounds[cid][-1].center())
-            path = QPainterPath(side)
-            path.arcTo(side.x() - 12, side.y(), self._curve_width, self._curve_height, 4 * self._curve_angle,
-                       self._curve_arc_length)
-            path.arcTo(side_point_hang.x(), side_point_hang.y(), self._curve_width, -self._curve_height,
-                       self._curve_angle, self._curve_arc_length)
-            lid = cid + "_" + oid + "_" + str(j) + "_" + str(a)
-            self.line_items[lid] = self.scene_object.addPath(path, pen=self.path_pen)
+    # # # END BUILD ITEM FUNCTIONS
+    def path_info_mouse_double_press(self, _, item: QGraphicsItem) -> None:
+        assert self.settings
+        # Include structure model
+        if self.settings.pathfinder.options.use_structure_model:
+            structure_model = self.settings.pathfinder.options.structure_model
+            if not isinstance(structure_model, db.Model):
+                raise RuntimeError("Structure model not set")
+        else:
+            structure_model = self.settings.pathfinder.options.model
 
-    def __draw_curves_after(self, reaction, n_compound_beside_after, cid, side) -> None:
-        a = len(self.line_items)
-        for j in range(n_compound_beside_after):
-            oid = reaction.id().string()
-            side_point_hang = QPoint(self.compounds[cid][-1].center())
-            path = QPainterPath(side)
-            path.arcTo(side.x(), side.y(), self._curve_width / 1.7, -self._curve_height, 2 * self._curve_angle,
-                       -self._curve_arc_length)
-            path.arcTo(side_point_hang.x(), side_point_hang.y(), -self._curve_width, self._curve_height,
-                       self._curve_angle, self._curve_arc_length)
-            lid = cid + "_" + oid + "_" + str(j) + "_" + str(a)
-            self.line_items[lid] = self.scene_object.addPath(path, pen=self.path_pen)
+        level_list = [0.0]
+        is_barrierless_list = []
+        type_list = []
+        for rxn_id in [rxn_node for rxn_node in item.path if ';' in rxn_node]:
+
+            # Get elementary step from graph or database
+            es_from_graph = None
+            if "elementary_step_id" in self._graph.nodes(data=True)[rxn_id]:
+                es_id = db.ID(
+                    self._graph.nodes(data=True)[rxn_id]["elementary_step_id"])
+                es_from_graph = db.ElementaryStep(es_id, self._elementary_step_collection)
+
+            if es_from_graph is None:
+                rxn = db.Reaction(db.ID(rxn_id.split(';')[0]), self._reaction_collection)
+                es, barriers = self._get_elementary_step_of_reaction_from_db(
+                    rxn,
+                    self.settings.pathfinder.options.model,
+                    structure_model)
+            else:
+                es = es_from_graph
+                barriers = get_barriers_for_elementary_step_by_type(
+                    es_from_graph,
+                    "electronic_energy",
+                    self.settings.pathfinder.options.model,
+                    self._structure_collection,
+                    self._property_collection
+                )
+
+            # Check faulty barriers
+            if any(barrier is None for barrier in barriers) or es is None:
+                raise RuntimeError("Barrier is None")
+
+            es_type = es.get_type()
+            if es_type == db.ElementaryStepType.BARRIERLESS:
+                is_barrierless_list.append(True)
+            else:
+                is_barrierless_list.append(False)
+
+            side_of_approach = int(rxn_id.split(';')[1])
+            if side_of_approach == 0:
+                tmp_up = barriers[0]
+                tmp_down = barriers[1]
+            else:
+                tmp_up = barriers[1]
+                tmp_down = barriers[0]
+            level_list.append(level_list[-1] + tmp_up)  # type: ignore
+            level_list.append(level_list[-1] - tmp_down)  # type: ignore
+        # # # Type list
+        for node_id in item.path:
+            if node_id is None or item.path_rank is None or item.path_length is None:
+                continue
+            # skip rxn nodes
+            if ';' in node_id:
+                continue
+            if self._graph.nodes(data=True)[node_id]['type'] == db.CompoundOrFlask.COMPOUND.name:
+                aggregate_type = db.CompoundOrFlask.COMPOUND
+            elif self._graph.nodes(data=True)[node_id]['type'] == db.CompoundOrFlask.FLASK.name:
+                aggregate_type = db.CompoundOrFlask.FLASK
+            else:
+                raise RuntimeError("Unknown aggregate type")
+            type_list.append(aggregate_type)
+        overall_rxn = self.settings.pathfinder.get_overall_reaction_equation(item.path)
+
+        # Model string construction
+        es_method_info = self.__construct_model_string(self.settings.pathfinder.options.model)
+        # Structure model string construction
+        if self.settings.pathfinder.options.use_structure_model \
+           and self.settings.pathfinder.options.structure_model != self.settings.pathfinder.options.model:
+            structure_model = self.settings.pathfinder.options.structure_model
+            es_method_info += " energies on " +\
+                              self.__construct_model_string(self.settings.pathfinder.options.structure_model)
+            es_method_info += " structures"
+
+        path_level_widget = PathLevelWidget(parent=self, db_manager=self.db_manager,
+                                            levels=level_list, barrierless=is_barrierless_list,
+                                            type_list=type_list,
+                                            path_info=(item.path_rank, item.path_length, item.path),
+                                            rxn_equation=overall_rxn,
+                                            es_method_info=es_method_info)
+
+        path_level_widget.show()
 
     def __bind_functions_to_object(self, object: Any) -> None:
         object.bind_mouse_press_function(self.mouse_press_function)
@@ -478,7 +539,7 @@ class GraphTravelView(ReactionAndCompoundView):
 
 
 class TraversalSettings(ReactionAndCompoundViewSettings):
-    def __init__(self, parent: QWidget, graph_travel_view: GraphTravelView) -> None:
+    def __init__(self, parent: QWidget, graph_travel_view: GraphTravelView, model: db.Model) -> None:
         super(TraversalSettings, self).__init__(parent=parent, parsed_layout=QVBoxLayout())
 
         # Elements of widget relative to width of ReactionProfile Canvas
@@ -488,11 +549,15 @@ class TraversalSettings(ReactionAndCompoundViewSettings):
         self.setMaximumWidth(self._widget_width)
 
         self.graph_travel_view = graph_travel_view
-        self.status_widget: Union[None, QWidget] = None
+        self.status_bar: Union[None, QWidget] = None
+
+        self.p_layout.addWidget(ToolBarWithSaveLoad(self._save, self._load, self,
+                                                    hover_text_save="Save Graph", hover_text_load="Load Graph"))
 
         self.start_box_label = QLabel(self)
         self.start_box_label.setText("Start ID")
-        self.start_box_label.resize(int(self._widget_width * 0.95), 40)
+        self.start_box_label.resize(int(self._widget_width * 0.95), 20)
+        self.start_box_label.setFixedHeight(20)
         self.p_layout.addWidget(self.start_box_label)
 
         self.start_id_text = QLineEdit(self)
@@ -502,7 +567,8 @@ class TraversalSettings(ReactionAndCompoundViewSettings):
 
         self.target_box_label = QLabel(self)
         self.target_box_label.setText("Target ID")
-        self.target_box_label.resize(int(self._widget_width * 0.95), 40)
+        self.target_box_label.resize(int(self._widget_width * 0.95), 20)
+        self.target_box_label.setFixedHeight(20)
         self.p_layout.addWidget(self.target_box_label)
 
         self.target_id_text = QLineEdit(self)
@@ -511,67 +577,86 @@ class TraversalSettings(ReactionAndCompoundViewSettings):
         self.p_layout.addWidget(self.target_id_text)
         # Search layout box
         hbox1layout = QHBoxLayout()
-        button_search = QPushButton("Search")
-        button_search.setFixedSize(int(self._widget_width * 0.33), 40)
-        button_search.clicked.connect(  # pylint: disable=no-member
+        self.button_search = TextPushButton(
+            "Search",
             lambda: self.trigger_thread_function(
-                self.__search_function))
-        hbox1layout.addWidget(button_search)
+                self._search_function,
+                self._print_progress))
+        hbox1layout.addWidget(self.button_search)
 
-        self.button_prev = QPushButton("Prev 15")
-        self.button_prev.clicked.connect(self.__prev_function)  # pylint: disable=no-member
-        self.button_prev.setFixedSize(int(self._widget_width * 0.3), 40)
+        self.button_prev = TextPushButton("Previous", self.__prev_function)
         self.button_prev.setDisabled(True)
         hbox1layout.addWidget(self.button_prev)
 
-        self.button_next = QPushButton("Next 15")
-        self.button_next.setFixedSize(int(self._widget_width * 0.3), 40)
+        self.button_next = TextPushButton("Next", lambda: self.trigger_thread_function(
+            self.__next_function, self._print_progress))
         self.button_next.setDisabled(True)
-        self.button_next.clicked.connect(  # pylint: disable=no-member
-            lambda: self.trigger_thread_function(
-                self.__next_function))
         hbox1layout.addWidget(self.button_next)
 
         self.p_layout.addLayout(hbox1layout)
         # List of currently found paths and bool to indicate if new paths have been found
-        self.found_paths: List[Tuple[List[str], List[int], float]] = []
+        self.paths_excluding_reaction_double_crossing: List[Tuple[List[str], float]] = []
+        self.paths_including_reaction_double_crossing: List[Tuple[List[str], float]] = []
+
         self.new_paths = False
-        self._first_path_index = 0
+        self._first_index_no_double_rxns = 0
+        self._first_index_double_rxns = 0
         self._searched_unique_paths = False
         self._skipped_paths_counter = 0
+        self._pathfinder_options_changed = False
+        self._pathfinder_graph_from_file = False
 
         # Timer for plotting newly found paths
         self.check_new_paths_timer = QTimer(self)
-        self.check_new_paths_timer.setInterval(50)
+        # Timer might be causing segfaults if too short
+        self.check_new_paths_timer.setInterval(1)
         self.check_new_paths_timer.timeout.connect(self.__plot_new_paths)  # pylint: disable=no-member
         self.check_new_paths_timer.start()
 
-        self.cb_box_label = QLabel(self)
-        self.cb_box_label.setText("Graph Weighting Options")
-        self.cb_box_label.resize(int(self._widget_width * 0.95), 40)
-        self.p_layout.addWidget(self.cb_box_label)
+        self.pathfinder = pf(self.graph_travel_view.db_manager)
+        # Model from CRNetworkView
+        self.pathfinder.options.model = copy.deepcopy(model)
+        self.pathfinder.options.structure_model = copy.deepcopy(model)
 
-        self.path_weight_options = pf.get_valid_graph_handler_options()
-        self.pathfinder: Union[pf, None] = None
+        self._start_conditions: Dict[str, float] = {}
 
-        self._path_weight_cb = QComboBox()
-        for weighting_scheme in self.path_weight_options:
-            self._path_weight_cb.addItem(weighting_scheme)
-        self._path_weight_cb.currentIndexChanged.connect(self.update_path_weighting)  # pylint: disable=no-member
-        self.p_layout.addWidget(self._path_weight_cb)
+        # buttons
 
-        self.button_update = QPushButton("Update")
-        self.p_layout.addWidget(self.button_update)
-        self.button_update.clicked.connect(self._update_function)  # pylint: disable=no-member
+        self.button_settings = TextPushButton("Pathfinder Settings", self._show_settings)
+        self.p_layout.addWidget(self.button_settings)
 
-        self.save_to_svg_button = QPushButton("Save SVG")
-        self.save_to_svg_button.clicked.connect(  # pylint: disable=no-member
-            self.graph_travel_view.save_svg
-        )
+        self.button_ccost = TextPushButton("Start conditions", self._show_start_conditions)
+        self.p_layout.addWidget(self.button_ccost)
+
+        self.button_calculate_compound_costs = TextPushButton(
+            "Calculate Compound Costs", lambda: self.trigger_thread_function(
+                self.__calculate_compound_costs_function, self._print_progress))
+        self.p_layout.addWidget(self.button_calculate_compound_costs)
+
+        self.buttons_to_deactivate = [self.button_search, self.button_next, self.button_prev,
+                                      self.button_settings, self.button_ccost, self.button_calculate_compound_costs]
+        self.buttons_to_reactivate: List[Any] = []
+
+        self.save_to_svg_button = TextPushButton("Save SVG", self.graph_travel_view.save_svg)
         self.p_layout.addWidget(self.save_to_svg_button)
 
+        # Search time layout
+        search_time_layout = QHBoxLayout()
+        search_time_layout.addWidget(WrappedLabel("Max. Search Time"))
+        self.max_search_time = NoWheelDoubleSpinBox()
+        self.max_search_time.setMinimum(1.0)
+        self.max_search_time.setMaximum(3600.0)
+        self.max_search_time.setValue(60.0)
+        search_time_layout.addWidget(self.max_search_time)
+        self.p_layout.addLayout(search_time_layout)
+
         self.unique_paths_cbox = QCheckBox("Show unique paths only")
+        self.unique_paths_cbox.setChecked(True)
         self.p_layout.addWidget(self.unique_paths_cbox)
+
+        self.true_sight_cbox = QCheckBox("Activate true sight")
+        self.true_sight_cbox.setToolTip("Allow identical reaction\n to occur twice in shown paths.")
+        self.p_layout.addWidget(self.true_sight_cbox)
 
         # Add molecule viewer and trajectory widgets to layout
         self.p_layout.addWidget(self.mol_widget)
@@ -585,80 +670,189 @@ class TraversalSettings(ReactionAndCompoundViewSettings):
         self.es_mep_widget.setMinimumWidth(self._widget_width)
         self.es_mep_widget.setMaximumWidth(self._widget_width)
 
-        self.path_weighting: str = self.path_weight_options[0]
-
-        # Setup compound costs settings and make them invisible per default
-        self._compound_costs_settings_visible = False
-        self._set_up_compound_costs_settings_widgets(self.p_layout)
         self.setLayout(self.p_layout)
         self.show()
-        self.set_compound_costs_settings_visible()
 
-    def set_compound_costs_settings_visible(self) -> None:
-        self._compound_costs_settings_visible = self.compound_costs_cbox.isChecked()
-        if self._compound_costs_settings_visible:
-            self.compound_costs_settings_widget.setVisible(True)
+    def set_status_bar(self, status_widget: QWidget):
+        self.status_bar = status_widget
+
+    def _save(self):
+        timestamp = datetime.datetime.now().strftime("%m%d-%H%M%S")
+        handler = self.pathfinder.options.graph_handler
+
+        filename = get_save_file_name(self, "graph." + handler + "." + timestamp, ['json'])
+        if filename is None:
+            return
+        self.pathfinder.export_graph(filename)
+
+    def _load(self):
+        graph_filename = get_load_file_name(self, "graph", ['json'])
+        if graph_filename is None:
+            return
+        compound_cost_filename = get_load_file_name(self, "compound_costs", ["json"])
+        if compound_cost_filename is None:
+            self.pathfinder.load_graph(graph_filename)
+            self._pathfinder_graph_from_file = True
         else:
-            self.compound_costs_settings_widget.setVisible(False)
+            self.pathfinder.load_graph(graph_filename, compound_cost_filename)
+            self._pathfinder_graph_from_file = True
+        # # # Link graph of travel view to graph of graph handler
+        self.graph_travel_view._graph = self.pathfinder.graph_handler.graph
 
-    def _set_up_compound_costs_settings_widgets(self, layout):
-        self.compound_costs_cbox = QCheckBox("COMPOUND COSTS SETTINGS")
-        self.compound_costs_cbox.setChecked(self._compound_costs_settings_visible)
-        self.compound_costs_cbox.toggled.connect(  # pylint: disable=no-member
-            self.set_compound_costs_settings_visible
-        )
-
-        self.compound_costs_settings_widget = CompoundCostsSettingsWidget(self, self)
-        layout.addWidget(self.compound_costs_cbox)
-        layout.addWidget(self.compound_costs_settings_widget)
-
-    def set_status_widget(self, status_widget: QWidget):
-        self.status_widget = status_widget
-
-    def __print_progress(self, n):
-        if n:
-            self.status_widget.setText("Calculating routes")
+    def _print_progress(self, signal):
+        if signal[0]:
+            self.status_bar.clear_message()
+            self.status_bar.update_status("Status:" + 4 * " " + signal[1], timer=None)
+        # When signal is false, error status
         else:
-            self.status_widget.setText("Ready")
+            self.status_bar.clear_message()
+            self.status_bar.update_error_status("Status:" + 4 * " " + signal[1], timer=5 * 1000)
 
-    def trigger_thread_function(self, func):
+    @staticmethod
+    def trigger_thread_function(func, info_func):
         worker = Worker(func)
-        worker.signals.running.connect(self.__print_progress)
+        worker.signals.running.connect(info_func)
 
         pool = QThreadPool.globalInstance()
         pool.start(worker)
 
-    def update_path_weighting(self, new_weighting_index: int):
-        self.path_weighting = self.path_weight_options[new_weighting_index]
-
-    def __valid_path_to_plot(self, pathfinder_path_nodes: List[str]):
+    def __path_has_reaction_double_crossing(self, pathfinder_path_nodes: List[str]):
         # Extract ID of reaction nodes of pathfinder path
         tmp_rxn_list = [node.split(";")[0] for node in pathfinder_path_nodes if ";" in node]
         # True if every reaction only appears once, else False
-        return len(tmp_rxn_list) == len(list(set(tmp_rxn_list)))
-
-    def __add_path_to_found_paths(self, pathfinder_path: Tuple[List[str], float]):
-        # Extract ID of reaction nodes of pathfinder path
-        tmp_rxn_list = [node.split(";")[0] for node in pathfinder_path[0] if ";" in node]
-        # Extract side from which the reaction is approached; 0 corresponds to db.Side.LHS, 1 to db.Side.RHS
-        tmp_rxn_side_list = [int(node.split(";")[1][0]) for node in pathfinder_path[0] if ";" in node]
-        # Add path to self.found_paths
-        self.found_paths.append((tmp_rxn_list, tmp_rxn_side_list, pathfinder_path[1]))
+        return len(tmp_rxn_list) != len(list(set(tmp_rxn_list)))
 
     def __clear_found_paths(self):
-        self.found_paths = []
+        self.paths_excluding_reaction_double_crossing = []
+        self.paths_including_reaction_double_crossing = []
 
-    def _update_function(self):
-        self.pathfinder = pf(self.graph_travel_view.db_manager)
-        self.pathfinder.options.graph_handler = self.graph_travel_view.settings.path_weighting
+    def _build_graph_function(self):
         self.pathfinder.build_graph()
 
-    def __search_function(self, progress_callback: SignalInstance):
-        progress_callback.emit(True)
+    def _show_settings(self):
+        docstring_parser = DocStringParser()
+        docstrings = docstring_parser.get_docstring_for_object_attrs(self.pathfinder.__class__.__name__,
+                                                                     self.pathfinder.options)
+        prev_options = copy.deepcopy(self.pathfinder.options)
+        options = DictOptionWidget.get_attributes_of_object(self.pathfinder.options)
+        setting_widget = ClassOptionsWidget(
+            options, docstrings, parent=self, add_close_button=True,
+            allow_removal=False,
+        )
+        # # # Other Defaults for barrierless weight widget
+        barrierless_weight_widget = setting_widget._option_widget._option_widgets['barrierless_weight']
+        barrierless_weight_widget.setMaximum(float(1e14))
+        barrierless_weight_widget.setValue(1e12)
+        # # #
+        setting_widget.exec_()
+        DictOptionWidget.set_attributes_to_object(self.pathfinder.options, options)
+        self._pathfinder_options_changed = bool(prev_options != self.pathfinder.options)
+
+    def _show_start_conditions(self):
+        # can load stuff from json
+        new_compound_costs = copy.deepcopy(self._start_conditions)
+        ccost_widget = CompoundCostOptionsWidget(new_compound_costs, parent=self)
+        # exec for looking
+        ccost_widget.show()
+
+    def _disable_buttons(self):
+        # Disable buttons to avoid overload
+        buttons_to_reactivate = []
+        for button in self.buttons_to_deactivate:
+            if button.isEnabled():
+                buttons_to_reactivate.append(button)
+                button.setDisabled(True)
+        return buttons_to_reactivate
+
+    def _show_path_level_widget(self):
+        path_level_widget = PathLevelWidget(parent=self, db_manager=self.graph_travel_view.db_manager)
+        path_level_widget.show()
+
+    def _find_unique_paths_and_store_in_cache(self) -> bool:
+        """
+        Wrapper function for finding unique paths and storing the results in the cache
+        for including double crossing of reactions and
+        for excluding double crossing of reactions.
+
+        Returns
+        -------
+        search_timed_out : bool
+            Bool indicating if the search was interrupted by a time out.
+        """
+        # Counter for following loops
+        path_counter = 0
+        search_timed_out = False
+        # Loop until 15 paths are found
+        search_start_time = time.time()
+        while (path_counter < 15):
+            tmp_paths = self.pathfinder.find_unique_paths(
+                self.start_id_text.text(), self.target_id_text.text(), 1)
+            if len(tmp_paths) == 0:
+                break
+            # Regardless if valid or not, save the path here
+            self.paths_including_reaction_double_crossing.append(tmp_paths[0])
+            # Count only, if it is a path without rxn double crossing
+            if not self.__path_has_reaction_double_crossing(tmp_paths[0][0]):
+                self.paths_excluding_reaction_double_crossing.append(tmp_paths[0])
+                path_counter += 1
+            if not self.pathfinder._use_old_iterator:
+                self.pathfinder._use_old_iterator = True
+            if ((time.time() - search_start_time) > float(self.max_search_time.value())):
+                search_timed_out = True
+                break
+        return search_timed_out
+
+    def _find_paths_and_store_in_cache(self) -> bool:
+        """
+        Wrapper function for finding non-unique paths and storing the results in the cache
+        for including double crossing of reactions and
+        for excluding double crossing of reactions.
+
+        Returns
+        -------
+        search_timed_out : bool
+            Bool indicating if the search was interrupted by a time out.
+        """
+        # counter
+        path_counter = 0
+        search_timed_out = False
+        analyzed_paths = 0
+        search_start_time = time.time()
+        while (path_counter < 15):
+            tmp_paths = self.pathfinder.find_paths(self.start_id_text.text(), self.target_id_text.text(), 1,
+                                                   n_skipped_paths=self._skipped_paths_counter)
+            if len(tmp_paths) == 0:
+                break
+            self._skipped_paths_counter += 1
+            analyzed_paths += 1
+            # Regardless if valid or not, save the path here
+            self.paths_including_reaction_double_crossing.append(tmp_paths[0])
+            # Count only, if it is a valid path
+            if not self.__path_has_reaction_double_crossing(tmp_paths[0][0]):
+                self.paths_excluding_reaction_double_crossing.append(tmp_paths[0])
+                path_counter += 1
+            if ((time.time() - search_start_time) > float(self.max_search_time.value())):
+                search_timed_out = True
+                break
+        return search_timed_out
+
+    def _search_function(self, progress_callback: SignalInstance):
+        progress_callback.emit((True, "Calculating routes"))
+        self.buttons_to_reactivate = self._disable_buttons()
+
         if self.start_id_text.text() == "" or self.target_id_text.text() == "":
-            raise RuntimeError("Please add a start ID and a target ID for your search.")
-        if self.pathfinder is None:
-            self._update_function()
+            progress_callback.emit((False, "Add a start ID and a target ID for your search."))
+            return
+
+        if self.pathfinder.graph_handler is None or (
+                self._pathfinder_options_changed and not self._pathfinder_graph_from_file):
+            progress_callback.emit((True, "Building graph"))
+            self._build_graph_function()
+            self.graph_travel_view._graph = self.pathfinder.graph_handler.graph
+            progress_callback.emit((True, "Calculating routes"))
+            # Reset bool for changed options
+            if self._pathfinder_options_changed:
+                self._pathfinder_options_changed = False
             assert self.pathfinder
         else:
             assert self.pathfinder
@@ -666,264 +860,166 @@ class TraversalSettings(ReactionAndCompoundViewSettings):
         # Reset iterator in pathfinder
         self.pathfinder._use_old_iterator = False
         self._skipped_paths_counter = 0
-        # Clear self.found_paths
+        # Clear all paths found so far
         self.__clear_found_paths()
-        path_counter = 0
+
+        search_timed_out = False
+
         if self.unique_paths_cbox.isChecked():
             # Loop until 15 paths are found
-            while (path_counter < 15):
-                tmp_paths = self.pathfinder.find_unique_paths(
-                    self.start_id_text.text(), self.target_id_text.text(), 1)
-                if len(tmp_paths) == 0:
-                    break
-                if self.__valid_path_to_plot(tmp_paths[0][0]):
-                    self.__add_path_to_found_paths(tmp_paths[0])
-                    path_counter += 1
-                if not self.pathfinder._use_old_iterator:
-                    self.pathfinder._use_old_iterator = True
+            search_timed_out = self._find_unique_paths_and_store_in_cache()
             # Activate next Button
-            self.button_next.setEnabled(True)
+            self.buttons_to_reactivate.append(self.button_next)
             # Set search type memory
             self._searched_unique_paths = True
         else:
             # Loop until 15 paths are found
-            while (path_counter < 15):
-                tmp_paths = self.pathfinder.find_paths(self.start_id_text.text(), self.target_id_text.text(), 1,
-                                                       n_skipped_paths=self._skipped_paths_counter)
-                if len(tmp_paths) == 0:
-                    break
-                self._skipped_paths_counter += 1
-                if self.__valid_path_to_plot(tmp_paths[0][0]):
-                    self.__add_path_to_found_paths(tmp_paths[0])
-                    path_counter += 1
-            self.button_next.setEnabled(True)
+            search_timed_out = self._find_paths_and_store_in_cache()
             self._searched_unique_paths = False
+            self.buttons_to_reactivate.append(self.button_next)
 
         # Reset found paths and first path index
-        self.pathfinder._use_old_iterator = True
-        self._first_path_index = 0
         self.new_paths = True
-        self.button_prev.setDisabled(True)
+        self.pathfinder._use_old_iterator = True
+        self._first_index_double_rxns = 0
+        self._first_index_no_double_rxns = 0
 
-        progress_callback.emit(False)
+        # Signal to Status Box
+        status_message = "Ready"
+        if search_timed_out:
+            status_message += " -- with search time out"
+        if len(self.paths_excluding_reaction_double_crossing) == 0:
+            status_message += " -- True sight mode"
+        progress_callback.emit((True, status_message))
 
-    def __next_function(self, progress_callback: SignalInstance):
-        progress_callback.emit(True)
-        assert self.pathfinder
-        # Check, if previous search was unique or not
-        if self.unique_paths_cbox.isChecked() is self._searched_unique_paths:
-            if len(self.found_paths) - self._first_path_index == 15:
-                path_counter = 0
-                if self.unique_paths_cbox.isChecked():
-                    # Loop until 15 paths are found
-                    while (path_counter < 15):
-                        tmp_paths = self.pathfinder.find_unique_paths(
-                            self.start_id_text.text(), self.target_id_text.text(), 1)
-                        if len(tmp_paths) == 0:
-                            break
-                        if self.__valid_path_to_plot(tmp_paths[0][0]):
-                            self.__add_path_to_found_paths(tmp_paths[0])
-                            path_counter += 1
-                else:
-                    # Loop until 15 paths are found
-                    while (path_counter < 15):
-                        tmp_paths = self.pathfinder.find_paths(
-                            self.start_id_text.text(),
-                            self.target_id_text.text(),
-                            15,
-                            n_skipped_paths=self._skipped_paths_counter)
-                        if len(tmp_paths) == 0:
-                            break
-                        self._skipped_paths_counter += 1
-                        if self.__valid_path_to_plot(tmp_paths[0][0]):
-                            self.__add_path_to_found_paths(tmp_paths[0])
-                            path_counter += 1
-
-            self._first_path_index += 15
-            self.button_prev.setEnabled(True)
-        # # # Reset if entry of check box changed
+    def _paths_in_cache(self) -> bool:
+        paths_in_cache = False
+        # Check paths including rxn double crossings if box is checked
+        if self.true_sight_cbox.isChecked():
+            if (len(self.paths_including_reaction_double_crossing) - self._first_index_double_rxns) > 15:
+                paths_in_cache = True
+        # Check paths excluding rxn double crossings if box is checked
         else:
-            self.__search_function(progress_callback)
+            if (len(self.paths_excluding_reaction_double_crossing) - self._first_index_no_double_rxns) > 15:
+                paths_in_cache = True
+        return paths_in_cache
 
-        progress_callback.emit(False)
+    def __next_function(self, progress_callback: SignalInstance):  # pylint: disable=unused-argument
+
+        if self.start_id_text.text() == "" or self.target_id_text.text() == "":
+            progress_callback.emit((False, "Add a start ID and a target ID for your search."))
+            return
+
+        progress_callback.emit((True, "Calculating routes"))
+        self.buttons_to_reactivate = self._disable_buttons()
+        assert self.pathfinder
+        increase_indices = False
+        search_timed_out = False
+        # Check, if previous search was unique or not
+        if self.unique_paths_cbox.isChecked() == self._searched_unique_paths:
+            if self._paths_in_cache():
+                increase_indices = True
+            elif self.unique_paths_cbox.isChecked():
+                search_timed_out = self._find_unique_paths_and_store_in_cache()
+            else:
+                # Loop until 15 paths are found
+                search_timed_out = self._find_paths_and_store_in_cache()
+
+            # # # Safety check for case no rxn excluding double crossing are found
+            if len(self.paths_excluding_reaction_double_crossing) == 0 and\
+               (len(self.paths_including_reaction_double_crossing) - self._first_index_double_rxns) > 15:
+                increase_indices = True
+            # # # Determine on how to increase indices
+            if increase_indices:
+                self._first_index_no_double_rxns += 15
+                self._first_index_double_rxns += 15
+            else:
+                # # # Set indices
+                self._first_index_no_double_rxns = 15 * \
+                    int((len(self.paths_excluding_reaction_double_crossing) - 1) / 15)
+                self._first_index_double_rxns = 15 * int((len(self.paths_including_reaction_double_crossing) - 1) / 15)
+        # # # Redo search if any entry of checked box changed
+        else:
+            self.trigger_thread_function(self._search_function, self._print_progress)
+
+        # Signal to Status Box
+        status_message = "Ready"
+        if search_timed_out:
+            status_message += " -- with search time out"
+        if len(self.paths_excluding_reaction_double_crossing) == 0:
+            status_message += " -- True sight mode"
+        progress_callback.emit((True, status_message))
+
         self.new_paths = True
 
     def __prev_function(self):
-        if self.unique_paths_cbox.isChecked() is self._searched_unique_paths:
+        if self.unique_paths_cbox.isChecked() == self._searched_unique_paths:
+            self.buttons_to_reactivate = self._disable_buttons()
             # Reduce start index by 15
-            self._first_path_index -= 15
+            self._first_index_no_double_rxns -= 15
+            self._first_index_double_rxns -= 15
             self.new_paths = True
-            if self._first_path_index == 0:
-                self.button_prev.setDisabled(True)
         else:
-            self.trigger_thread_function(self.__search_function)
+            self.trigger_thread_function(self._search_function, self._print_progress)
 
     def __plot_new_paths(self):
         if self.new_paths:
-            self.graph_travel_view.plot_graph_travel(
-                self.start_id_text.text(), self.target_id_text.text(),
+            # Get end index based on length of stored reactions
+            if len(self.paths_excluding_reaction_double_crossing) - self._first_index_no_double_rxns >= 15:
+                no_double_cross_step = 15
+            else:
+                no_double_cross_step = len(self.paths_excluding_reaction_double_crossing) % 15
+
+            if len(self.paths_including_reaction_double_crossing) - self._first_index_double_rxns >= 15:
+                double_cross_step = 15
+            else:
+                double_cross_step = len(self.paths_including_reaction_double_crossing) % 15
+
+            self.graph_travel_view.plot_paths(
                 # List of list of visited reaction nodes
-                [path_data for path_data in self.found_paths[self._first_path_index:self._first_path_index + 15]]
+                [path_data for path_data in
+                    self.paths_excluding_reaction_double_crossing[
+                        self._first_index_no_double_rxns:self._first_index_no_double_rxns + no_double_cross_step]],
+                [path_data for path_data in
+                    self.paths_including_reaction_double_crossing[
+                        self._first_index_double_rxns:self._first_index_double_rxns + double_cross_step]],
+                self.true_sight_cbox.isChecked()
             )
+
+            # Add or remove previous button dependent on index
+            if self._first_index_no_double_rxns > 0.0 or\
+               (self.true_sight_cbox.isChecked() and self._first_index_double_rxns > 0.0):
+                self.buttons_to_reactivate.append(self.button_prev)
+            elif self.button_prev in self.buttons_to_reactivate:
+                self.buttons_to_reactivate.remove(self.button_prev)
+                self.button_prev.setDisabled(True)
+
+            # Reactivate all of the required buttons
+            for button in self.buttons_to_reactivate:
+                button.setDisabled(False)
+            self.buttons_to_reactivate = []
             # Reset trigger for plotting
             self.new_paths = False
 
-
-class CompoundCostsSettingsWidget(QWidget):
-    def __init__(self, parent: QWidget, traversal_settings: TraversalSettings):
-        super(CompoundCostsSettingsWidget, self).__init__(parent=parent)
-
-        self.traversal_settings = traversal_settings
-        self._widget_width = self.traversal_settings._widget_width * 0.9
-
-        self.start_compound_fields = 1
-        self.__layout = QVBoxLayout()
-
-        self.__set_up_start_conditions_widgets()
-        self.__add_buttons()
-
-        self.setLayout(self.__layout)
-
-    def __print_progress(self, n):
-        if n:
-            self.traversal_settings.status_widget.setText("Determining compound costs")
+    def __calculate_compound_costs_function(self, progress_callback: SignalInstance):  # pylint: disable=unused-argument
+        if self.pathfinder is None:
+            self.trigger_thread_function(self._build_graph_function, self._print_progress)
+            assert self.pathfinder
         else:
-            self.traversal_settings.status_widget.setText("Ready")
-
-    def trigger_thread_function(self, func):
-        worker = Worker(func)
-        worker.signals.running.connect(self.__print_progress)
-
-        pool = QThreadPool.globalInstance()
-        pool.start(worker)
-
-    def __set_up_start_conditions_widgets(self):
-        # Compound ID and Compound Cost
-        compound_id_label = QLabel(self)
-        compound_id_label.setFixedSize(self._widget_width * 0.6, 40)
-        compound_id_label.setText("Compound ID")
-        compound_cost_label = QLabel(self)
-        compound_cost_label.setFixedSize(self._widget_width * 0.3, 40)
-        compound_cost_label.setText("C. Cost")
-        hbox1Layout = QHBoxLayout()
-        hbox1Layout.addWidget(compound_id_label)
-        hbox1Layout.addWidget(compound_cost_label)
-        self.__layout.addLayout(hbox1Layout)
-        self.__add_input_widgets()
-
-    def __add_input_widgets(self):
-        compound_id_text = QLineEdit(self)
-        compound_id_text.setFixedSize(self._widget_width * 0.6, 40)
-        compound_id_text.setText("")
-        compound_cost_text = QLineEdit(self)
-        compound_cost_text.setFixedSize(self._widget_width * 0.35, 40)
-        compound_cost_text.setText("")
-        hbox2Layout = QHBoxLayout()
-        hbox2Layout.addWidget(compound_id_text)
-        hbox2Layout.addWidget(compound_cost_text)
-        self.__layout.addLayout(hbox2Layout)
-
-    def __add_buttons(self):
-        button_add_start_compounds = QPushButton("+")
-        button_add_start_compounds.setFixedSize(self._widget_width * 0.2, 40)
-        button_add_start_compounds.clicked.connect(  # pylint: disable=no-member
-            self.__add_start_compounds_function)
-        button_remove_start_compounds = QPushButton("-")
-        button_remove_start_compounds.setFixedSize(self._widget_width * 0.2, 40)
-        button_remove_start_compounds.clicked.connect(  # pylint: disable=no-member
-            self.__remove_start_compounds_function)
-
-        button_reset_start_compounds = QPushButton("Reset")
-        button_reset_start_compounds.resize(self._widget_width * 0.6, 40)
-        button_reset_start_compounds.clicked.connect(  # pylint: disable=no-member
-            self.__reset_start_compounds_function)
-
-        hbox1Layout = QHBoxLayout()
-        hbox1Layout.addWidget(button_add_start_compounds)
-        hbox1Layout.addWidget(button_remove_start_compounds)
-        hbox1Layout.addWidget(button_reset_start_compounds)
-        self.__layout.addLayout(hbox1Layout)
-
-        button_calculate_compound_costs = QPushButton("Calculate Compound Costs")
-        button_calculate_compound_costs.resize(self._widget_width, 40)
-        button_calculate_compound_costs.clicked.connect(  # pylint: disable=no-member
-            lambda: self.trigger_thread_function(self.__calculate_compound_costs_function))
-        self.__layout.addWidget(button_calculate_compound_costs)
-
-    def __add_start_compounds_function(self):
-        self.parent().setMinimumHeight(self.parent().height() + 60)
-        self.start_compound_fields += 1
-        # Remove calc compound costs button
-        button_calc_compound_costs = self.__layout.itemAt(self.__layout.count() - 1)
-        button_calc_compound_costs.widget().deleteLater()
-        # Remove +, -, reset button
-        button_layout = self.__layout.itemAt(self.__layout.count() - 2).layout()
-        self.__clear_layout(button_layout)
-        self.__layout.removeItem(button_layout)
-
-        # Add new input widgets
-        self.__add_input_widgets()
-        # Add buttons at bottom
-        self.__add_buttons()
-
-    def __remove_start_compounds_function(self):
-        if self.start_compound_fields == 1:
-            # Reset text in first input widget
-            self.__layout.itemAt(1).layout().itemAt(0).widget().setText("")
-            self.__layout.itemAt(1).layout().itemAt(1).widget().setText("")
-        else:
-            self.start_compound_fields -= 1
-            last_input_layout = self.__layout.itemAt(self.__layout.count() - 3).layout()
-            self.__clear_layout(last_input_layout)
-            self.__layout.removeItem(last_input_layout)
-            self.parent().setMinimumHeight(self.parent().height() - 60)
-
-    @staticmethod
-    def __clear_layout(layout):
-        for i in range(layout.count()):
-            widget = layout.itemAt(i).widget()
-            widget.deleteLater()
-
-    def __reset_start_compounds_function(self):
-        deleteLayout = []
-        # Clear all input widgets
-        for i in range(2, self.start_compound_fields + 1):
-            item = self.__layout.itemAt(i)
-            if item is not None:
-                layout = item.layout()
-                if layout is not None:
-                    self.__clear_layout(layout)
-                    deleteLayout.append(layout)
-        # Clear all input widgets layout
-        for k in deleteLayout:
-            self.__layout.removeItem(k)
-        self.parent().setMinimumHeight(self.parent().height() - 60 * self.start_compound_fields)
-        self.start_compound_fields = 1
-        # Reset text in first input widget
-        self.__layout.itemAt(1).layout().itemAt(0).widget().setText("")
-        self.__layout.itemAt(1).layout().itemAt(1).widget().setText("")
-
-    def __calculate_compound_costs_function(self, progress_callback: SignalInstance):
-        if self.traversal_settings.pathfinder is None:
-            self.traversal_settings._update_function()
-            assert self.traversal_settings.pathfinder
-        else:
-            assert self.traversal_settings.pathfinder
-        progress_callback.emit(True)
-        start_conditions = {}
-        # Create input dictionary
-        for input_widgets in [self.__layout.itemAt(i).layout() for i in range(1, self.start_compound_fields + 1)]:
-            key = input_widgets.itemAt(0).widget().text()
-            value = input_widgets.itemAt(1).widget().text()
-            if key == "" or value == "":
-                raise RuntimeError("Please complete input.")
-            if float(value) < 0:
-                raise RuntimeError("Only weights > 0 are allowed.")
-            start_conditions[key] = float(value)
-
-        self.traversal_settings.pathfinder.set_start_conditions(start_conditions)
+            assert self.pathfinder
+        progress_callback.emit((True, "Calculate Compound Costs"))
+        # # # Set start conditions
+        self.pathfinder.set_start_conditions(self._start_conditions)
         # # # Determine the compound costs
-        self.traversal_settings.pathfinder.calculate_compound_costs()
+        self.pathfinder.calculate_compound_costs()
+        # # # Save compound costs
+        timestamp = datetime.datetime.now().strftime("%m%d-%H%M%S")
+        filename = Path("compound_costs." + timestamp + ".json")
+        self.pathfinder.export_compound_costs(filename)
         # # # Update the graph with the information of the compound costs
-        self.traversal_settings.pathfinder.update_graph_compound_costs()
-        progress_callback.emit(False)
+        self.pathfinder.update_graph_compound_costs()
+
+        progress_callback.emit((True, "Ready"))
+        if self.start_id_text.text() != "" and self.target_id_text.text() != "":
+            self.trigger_thread_function(self._search_function,
+                                         self._print_progress)

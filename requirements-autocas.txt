@@ -1,0 +1,2 @@
+-r requirements.txt
+scine_autocas==2.3.1

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
 Provides the Settings class.
 """
-from typing import Optional
+from typing import Optional, List
 from enum import Enum
 
 
@@ -21,6 +21,7 @@ class MoleculeStyle(Enum):
     LiquoriceStick = "liquorice stick"
     Fast = "fast"
     PartialCharges = "partial charges"
+    ForceArrow = "force arrow"
 
 
 class LabelsStyle(Enum):
@@ -48,18 +49,11 @@ class MolViewSettings:
         self.selected_molecular_orbital: Optional[int] = None
         self.number_of_molecular_orbital: Optional[int] = None
         self.molecular_orbital_value: float = 0.05
-        self.mouse_picked_atom_id: Optional[int] = None
+        self.mouse_picked_atom_ids: Optional[List[int]] = []
         self.haptic_picked_atom_id: Optional[int] = None
+        self.force_scaling: float = 1.0
         self.error_message: str = ""
         self.info_message: str = ""
-
-
-class CalculatorSettings:
-    def __init__(self) -> None:
-        self.program: str = 'Sparrow'
-        self.method: str = 'PM6'
-        self.molecular_charge: int = 0
-        self.spin_multiplicity: int = 1
-        self.spin_mode: str = 'unrestricted'
-        self.self_consistence_criterion: float = 1e-5
-        self.scf_mixer: str = 'diis'
+        self.haptic_force_scaling: float = 1.0
+        self.gradients_scaling: float = 0.1
+        self.bond_display: str = "distance"

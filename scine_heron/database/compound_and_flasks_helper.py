@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import Union
@@ -17,13 +17,13 @@ def get_compound_or_flask(object_id: db.ID, object_type: db.CompoundOrFlask, com
 
     Parameters
     ----------
-    object_id :: db.ID
+    object_id : db.ID
         The ID of the object to construct.
-    object_type :: db.CompoundOrFlask
+    object_type : db.CompoundOrFlask
         The label for Compound or Flaks.
-    compounds :: db.Collection
+    compounds : db.Collection
         The compounds collection.
-    flasks :: db.Collection
+    flasks : db.Collection
         The flasks collection.
 
     Returns

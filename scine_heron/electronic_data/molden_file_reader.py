@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
-"""
-"""
-Provides the molden file reader.
 """
 
 import re
+from typing import Any, List, Tuple, Optional
+
 import numpy as np
-from scine_heron.electronic_data.electronic_data import (
-    ElectronicData,
-    Atom,
-    MolecularOrbital,
-    GaussianOrbital,
-)
-from typing import List, Tuple, Any
+
+from scine_heron.electronic_data.electronic_data import (Atom, ElectronicData,
+                                                         GaussianOrbital,
+                                                         MolecularOrbital)
 
 
 class MoldenFileReader:
@@ -29,11 +25,10 @@ class MoldenFileReader:
         This method read molden file and return ElectronicData.
         """
         atoms, gto, mo = self.__parse_molden(molden)
-
         parsed_atoms = self.__parse_atoms(atoms)
         self.__parse_gto(parsed_atoms, gto)
-
-        return ElectronicData(parsed_atoms, self.__parse_mo(mo))
+        mos = self.__parse_mo(mo)
+        return ElectronicData(parsed_atoms, mos)
 
     def __parse_molden(self, molden: str) -> Tuple[List[str], List[str], List[str]]:
         """
@@ -47,10 +42,29 @@ class MoldenFileReader:
         atoms: List[str] = list()
         gto: List[str] = list()
         mo: List[str] = list()
-
         for line in molden.split("\n"):
             if re.match("^" + re.escape("[Atoms]"), line):
                 is_atom_line = True
+                is_gto_line = False
+                is_mo_line = False
+                continue
+            elif re.match("^" + re.escape("[5D]"), line):
+                is_atom_line = False
+                is_gto_line = False
+                is_mo_line = False
+                continue
+            elif re.match("^" + re.escape("[7F]"), line):
+                is_atom_line = False
+                is_gto_line = False
+                is_mo_line = False
+                continue
+            elif re.match("^" + re.escape("[9G]"), line):
+                is_atom_line = False
+                is_gto_line = False
+                is_mo_line = False
+                continue
+            elif re.match("^" + re.escape("[Charge] (Mullike)"), line):
+                is_atom_line = False
                 is_gto_line = False
                 is_mo_line = False
                 continue
@@ -67,10 +81,12 @@ class MoldenFileReader:
 
             if is_atom_line:
                 atoms.append(line)
+
             elif is_gto_line:
                 if line.startswith("["):
                     continue
                 gto.append(line)
+
             elif is_mo_line:
                 mo.append(line)
 
@@ -90,29 +106,95 @@ class MoldenFileReader:
             for _, block in enumerate(mo_orbital_blocks)
         ]
 
+    # def __stupid_gto_thing(self, gtos: List[str], atoms):
+    #     re_filter = re.compile("[spdfgh]")
+    #     j = 0
+    #     stupid_list = []
+    #     gto_list = []
+    #     other_list = []
+    #     atom_numbers = []
+
+    #     for _, line in enumerate(gtos):
+
+    #         # empty line
+    #         if line.strip() == "":
+    #             # ....
+    #             gto_list.append(line)
+    #             other_list.append(gto_list)
+    #             gto_list = []
+    #             j = 0
+    #             if other_list == []:
+    #                 pass
+    #             else:
+    #                 stupid_list.append(other_list)
+    #             other_list = []
+    #
+    #         # found s p d f g h
+    #         elif re_filter.match(line):
+    #             if gto_list == []:
+    #                 pass
+    #             else:
+    #                 other_list.append(gto_list)
+    #             gto_list = [line]
+
+    #         elif j == 0:
+    #             atom_numbers.append(int(line.split()[0]))
+    #             j = 1
+
+    #         elif j == 1:
+    #             gto_list.append(line)
+
+    #     return stupid_list, atom_numbers
+
+    def __new_atoms(self, gtos: List[str], atoms):
+        re_filter = re.compile("[spdfgh]")
+        gaussian_orbitals: List[GaussianOrbital] = []
+        gaussian_coeffs: List[List[float]] = []
+        j = 0
+        atom = atoms[0]
+        orbital_type: Optional[str] = None
+        new_atoms = []
+        for i, line in enumerate(gtos):
+            # last line
+            if i + 1 == len(gtos):
+                assert orbital_type
+                gaussian_orbitals.append(GaussianOrbital(orbital_type, gaussian_coeffs))
+                atom.gaussian_orbitals = gaussian_orbitals
+                new_atoms.append(atom)
+            # found s p d f g h
+            elif re_filter.match(line.lstrip()):
+                if orbital_type:
+                    gaussian_orbitals.append(
+                        GaussianOrbital(orbital_type, gaussian_coeffs)
+                    )
+                orbital_type = line.split()[0]
+                gaussian_coeffs = []
+            # empty line
+            elif line.strip() == "":
+                assert orbital_type
+                gaussian_orbitals.append(GaussianOrbital(orbital_type, gaussian_coeffs))
+                atom.gaussian_orbitals = gaussian_orbitals
+                new_atoms.append(atom)
+                orbital_type = None
+                j = 0
+            # atom
+            elif j == 0:
+                gaussian_orbitals = []
+                atom = atoms[int(line.split()[0]) - 1]
+                j = 1
+            # coeffs
+            elif j == 1:
+                gaussian_coeffs.append([float(line.split()[0]), float(line.split()[1])])
+        return new_atoms
+
     def __parse_gto(self, atoms: List[Atom], gto: List[str]) -> None:
         """
         This method parse AtomicOrbitalsGTO.
         """
-        gto_sections_heads = self.__get_section_heads_and_positions(
-            gto, r"\s*[0-9]+ [0-9]+"
-        )
-        gto_sections = self.__split_by_sections(gto, gto_sections_heads)
-
-        gto_blocks = []
-        for gto_section in gto_sections:
-            orb_sections_heads = self.__get_section_heads_and_positions(
-                gto_section, "[spdfgh]"
-            )
-            orb_sections = self.__split_by_sections(gto_section, orb_sections_heads)
-            gto_blocks.append(orb_sections)
-
-        atom_numbers = [int(x[1].split()[0]) for x in gto_sections_heads]
-
-        for atom_number, gto_block in zip(atom_numbers, gto_blocks):
-            atom = atoms[atom_number - 1]
-            atom.gaussian_orbitals = self.__parse_orbital_blocks(gto_block)
-
+        atoms = self.__new_atoms(gto, atoms)
+        i = 0
+        for atom in atoms:
+            i = i + 1
             atom.min_alpha = min(
                 [
                     np.min(atom.gaussian_orbitals[i].alpha)
@@ -120,25 +202,35 @@ class MoldenFileReader:
                 ]
             )
 
-            for i in range(len(atom.gaussian_orbitals)):
-                atom.sum_chi_step += atom.gaussian_orbitals[i].chi_step()
+            for u in range(len(atom.gaussian_orbitals)):
+                atom.sum_chi_step += atom.gaussian_orbitals[u].chi_step()
 
-    @staticmethod
-    def __parse_orbital_blocks(gto_block: List[Any]) -> List[GaussianOrbital]:
-        gaussian_orbitals = []
-        for orb_block in gto_block:
-            try:
-                orb_type, _, _ = orb_block[0].split()
-            except ValueError:
-                orb_type, _ = orb_block[0].split()
+    # @staticmethod
+    # def __parse_orbital_blocks(gto_block: List[Any]) -> List[GaussianOrbital]:
+    #     gaussian_orbitals = []
+    #     for orb_block in gto_block:
+    #         try:
+    #             orb_type, _, _ = orb_block[0].split()
+    #         except ValueError:
+    #             orb_type, _ = orb_block[0].split()
 
-            gaussian_coeffs = [
-                [float(x.replace("D", "E")) for x in coeff_line.split()]
-                for coeff_line in orb_block[1:]
-                if coeff_line not in ("", "\n")
-            ]
-            gaussian_orbitals.append(GaussianOrbital(orb_type, gaussian_coeffs))
-        return gaussian_orbitals
+    #         gaussian_coeffs = [
+    #             [float(x.replace("D", "E")) for x in coeff_line.split()]
+    #             for coeff_line in orb_block[1:]
+    #             if coeff_line not in ("", "\n")
+    #         ]
+    #         gaussian_orbitals.append(GaussianOrbital(orb_type, gaussian_coeffs))
+    #     return gaussian_orbitals
+
+    # @staticmethod
+    # def __get_section_heads_and_positions_alternative(lines):
+    #     sections = []
+    #     j = 0
+    #     for i, line in enumerate(lines):
+    #         if line.strip() == "":
+    #             sections.append([j, lines[j]])
+    #             j += i + 1
+    #     return sections
 
     @staticmethod
     def __get_section_heads_and_positions(

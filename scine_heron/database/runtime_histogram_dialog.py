@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import numpy as np
 from datetime import timedelta
+from json import dumps
 from typing import Optional, List
+
+from scine_database.queries import finished_calculations, unstarted_calculations
 
 from scine_heron.multithread import Worker
 from scine_heron.utilities import (
     color_axis,
     color_figure,
     get_font,
+    timedelta_string
 )
 
-from PySide2.QtCore import QObject, QThreadPool, SignalInstance
+from PySide2.QtCore import QObject, QThreadPool
 from PySide2.QtWidgets import QPushButton, QVBoxLayout, QDialog, QLabel
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from json import dumps
-
-from .db_queries import finished_calculations, unstarted_calculations
 
 
 class RuntimeHistogramDialog(QDialog):
@@ -57,7 +58,7 @@ class RuntimeHistogramDialog(QDialog):
                 pool = QThreadPool.globalInstance()
                 pool.start(worker)
 
-        def __update_data(self, progress_callback: SignalInstance):   # pylint: disable=unused-argument
+        def __update_data(self, *args, **kwargs) -> None:
             calculations = self.db_manager.get_collection("calculations")
             selection = finished_calculations()
             # Loop over all results
@@ -138,8 +139,8 @@ class RuntimeHistogramDialog(QDialog):
             )
             avg_wall_time = timedelta(seconds=(avg_wall_time / n_calcs))
             text = (
-                f"Total walltime so far: {self._string(avg_wall_time * n_calcs)} \n"
-                + f"Average walltime per job: {self._string(avg_wall_time)} \n"
+                f"Total walltime so far: {timedelta_string(avg_wall_time * n_calcs)} \n"
+                + f"Average walltime per job: {timedelta_string(avg_wall_time)} \n"
             )
             n_pending = calculations.count(dumps({"status": "pending"}))
             if n_pending > 0:
@@ -152,19 +153,13 @@ class RuntimeHistogramDialog(QDialog):
                 avg_cores_for_pending /= n_pending
                 n_todo = calculations.count(dumps(unstarted_calculations()))
                 walltime_left = (
-                    n_todo * avg_wall_time * avg_cores_for_pending / n_pending
+                    (n_todo + n_pending) * avg_wall_time * avg_cores_for_pending / n_pending
                 )
                 workers = "puffins" if n_pending > 1 else "puffin"
-                text += f"Estimated walltime left with currently {n_pending} {workers}: {self._string(walltime_left)}"
+                text += f"Estimated walltime left with currently {n_pending} {workers}: " + \
+                        f"{timedelta_string(walltime_left)}"
+                text += "\n(This estimate may be inaccurate if you have a database with varying models)"
             self.setText(text)
-
-        @staticmethod
-        def _string(t: timedelta) -> str:
-            """
-            Custom string conversion for timedelta to get rid of microseconds from default __str__
-            """
-            new_t = t - timedelta(microseconds=t.microseconds)
-            return str(new_t)
 
     def __init__(
         self,

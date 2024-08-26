@@ -1,10 +1,21 @@
 -r requirements.txt
 pytest
 coverage
-pylint==2.14.5
+pylint==2.13.9
 pylint-exit
 autopep8
+no_implicit_optional
 flake8
+autoflake
 hypothesis
+numpydoc
 mypy
 types-dataclasses
+types-PyYAML
+recommonmark
+sphinx
+sphinx_rtd_theme
+sphinx_autodoc_typehints
+sphinx_copybutton
+hypothesis
+pytest-qt

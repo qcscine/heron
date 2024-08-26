@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
 Provides the EnergyProfileStatusManager class.
 """
 
-from typing import Any, List, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
+from datetime import datetime
 from PySide2.QtCore import QObject
 if TYPE_CHECKING:
     Signal = Any
@@ -45,3 +46,9 @@ class EnergyProfileStatusManager(QObject):
         Empties the inner list
         """
         self.value = []
+
+    def get_latest_energy(self, seconds) -> Optional[float]:
+        if len(self.value) > 0:
+            if (datetime.now() - self.value[-1].time_stamp).total_seconds() < seconds:
+                return self.value[-1].energy
+        return None

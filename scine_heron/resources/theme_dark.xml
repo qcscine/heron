@@ -9,6 +9,7 @@
 <color name="secondaryTextColor">#ffffff</color> <!-- Unclickable text-->
 <color name="primaryLineColor">#ffffff</color> <!-- Primary line color-->
 <color name="secondaryLineColor">#787878</color> <!-- Secondary line color-->
+
 <color name="compoundColor">#8dd35f</color>
 <color name="reactionColor">#ff9955</color>
 <color name="associationColor">#d4aa00</color>
@@ -16,6 +17,8 @@
 <color name="structureColor">#154734</color>
 <color name="elementaryStepColor">#a11f05</color>
 <color name="borderColor">#000000</color>
+<color name="borderGrayColor">#20334a</color>
 <color name="edgeColor">#c8c8c8</color>
 <color name="highlightColor">#d40000</color>
+<color name="grayOutColor">#253a54</color>
 </resources>

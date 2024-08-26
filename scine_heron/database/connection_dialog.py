@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from typing import Optional
@@ -15,6 +15,9 @@ from PySide2.QtWidgets import (
     QMessageBox,
 )
 from scine_database import Manager
+
+from scine_heron.io.text_box import yes_or_no_question
+from scine_heron.utilities import write_error_message, write_info_message
 
 
 class DatabaseConnectionDialog(QDialog):
@@ -46,6 +49,7 @@ class DatabaseConnectionDialog(QDialog):
         self.name = QLineEdit(default_db_name)
         self.button_connect = QPushButton("Connect")
         self.button_disconnect = QPushButton("Disconnect")
+        self.button_wipe = QPushButton("Wipe")
         self.button_close = QPushButton("Close")
 
         # Create layout and add widgets
@@ -59,13 +63,16 @@ class DatabaseConnectionDialog(QDialog):
         layout.addWidget(self.name)
         layout.addWidget(self.button_connect)
         layout.addWidget(self.button_disconnect)
+        layout.addWidget(self.button_wipe)
         layout.addWidget(self.button_close)
         # Set dialog layout
         self.setLayout(layout)
         self.button_connect.clicked.connect(self.connect_manager)  # pylint: disable=no-member
         self.button_disconnect.clicked.connect(self.disconnect_manager)  # pylint: disable=no-member
+        self.button_wipe.clicked.connect(self.wipe_db)  # pylint: disable=no-member
         if not self.db_manager.is_connected():
-            self.button_disconnect.setEnabled(False)
+            self.button_disconnect.setEnabled(self.db_manager.is_connected())
+            self.button_wipe.setEnabled(self.db_manager.is_connected())
         self.button_close.clicked.connect(self.close)  # pylint: disable=no-member
 
     def connect_manager(self) -> None:
@@ -74,10 +81,19 @@ class DatabaseConnectionDialog(QDialog):
         credentials = db.Credentials(
             self.ip.text(), int(self.port.text()), self.name.text()
         )
-        self.db_manager.set_credentials(credentials)
+        if credentials != self.db_manager.get_credentials():
+            self.db_manager.set_credentials(credentials)
         try:
             self.db_manager.connect()
-            self.button_disconnect.setEnabled(True)
+            if not self.db_manager.has_collection("calculations"):
+                ans = yes_or_no_question(self, f"The database {self.name.text()} holds no collections. Create it")
+                if ans:
+                    self.db_manager.init()
+                else:
+                    self.db_manager.disconnect()
+                    write_error_message("Database not connected")
+            self.button_disconnect.setEnabled(self.db_manager.is_connected())
+            self.button_wipe.setEnabled(self.db_manager.is_connected())
             self.close()
         except Exception as e:  # pylint: disable=broad-except
             error_dialog = QMessageBox(parent=self)
@@ -94,6 +110,16 @@ class DatabaseConnectionDialog(QDialog):
     def disconnect_manager(self) -> None:
         self.db_manager.disconnect()
         self.button_disconnect.setEnabled(False)
+        self.button_wipe.setEnabled(False)
+
+    def wipe_db(self) -> None:
+        answer = yes_or_no_question(self,
+                                    f"Are you sure you want to delete everything in the database '{self.name.text()}'")
+        if not answer:
+            write_info_message(f"Aborted deletion of {self.name.text()}")
+            return
+        self.db_manager.wipe()
+        self.db_manager.init()
 
     def get_db_manager(self) -> Manager:
         self.exec_()

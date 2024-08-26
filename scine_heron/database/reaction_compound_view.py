@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import json
-from typing import Any, Optional, List, Dict, Union
+import numpy as np
+from typing import Any, Optional, List, Dict, Tuple, Union
 
 import scine_utilities as utils
 import scine_database as db
-
+from scine_database.energy_query_functions import (
+    get_barriers_for_elementary_step_by_type,
+    get_elementary_step_with_min_ts_energy
+)
 from scine_heron.database.graphics_items import Compound, Reaction
 from scine_heron.molecule.molecule_video import MoleculeVideo
 from scine_heron.molecule.molecule_widget import MoleculeWidget
@@ -23,6 +27,7 @@ from scine_heron.utilities import (
 
 from PySide2.QtWidgets import (
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsView,
     QWidget,
     QGraphicsScene,
@@ -58,11 +63,11 @@ class ReactionAndCompoundViewSettings(QWidget):
         self.es_mep_widget = ReactionProfileWidget(parent=self)
 
     def update_molecule_widget(self, new_widget):
-        self.p_layout.removeWidget(self.mol_widget)
+        self.p_layout.replaceWidget(self.mol_widget, new_widget)
         if isinstance(self.mol_widget, MoleculeVideo):
             self.mol_widget.close()
-        self.p_layout.addWidget(new_widget)
         self.mol_widget = new_widget
+        self.mol_widget.show()
 
 
 class ReactionAndCompoundView(QGraphicsView):
@@ -74,39 +79,44 @@ class ReactionAndCompoundView(QGraphicsView):
             self.scene_object = QGraphicsScene()
 
         super(ReactionAndCompoundView, self).__init__(self.scene_object, parent=parent)
-        self.settings: Union[None, ReactionAndCompoundViewSettings] = None
+        self.settings: ReactionAndCompoundViewSettings
 
         # settings regarding presentation
         self.compound_color = qcolor_by_key('compoundColor')
+        self.gray_out_color = qcolor_by_key('grayOutColor')
         self.reaction_color = qcolor_by_key('reactionColor')
         self.highlight_color = qcolor_by_key('highlightColor')
         self.border_color = qcolor_by_key('borderColor')
+        self.border_gray_color = qcolor_by_key('borderGrayColor')
         self.edge_color = qcolor_by_key('edgeColor')
         self.association_color = qcolor_by_key('associationColor')
         self.flask_color = qcolor_by_key('flaskColor')
+
+        # rendering smoother lines and edges of nodes
+        self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
 
         self.reaction_brush = build_brush(self.reaction_color)
         self.reaction_pen = build_pen(self.border_color)
         self.compound_brush = build_brush(self.compound_color)
         self.compound_pen = build_pen(self.border_color)
+        self.gray_border_pen = build_pen(self.border_gray_color)
         self.flask_brush = build_brush(self.flask_color)
         self.association_brush = build_brush(self.association_color)
         self.hover_brush = build_brush(self.highlight_color)
         self.hover_pen = build_pen(self.highlight_color, width=2)
+        self.gray_out_pen = build_pen(self.gray_out_color)
         self.path_pen = build_pen(self.edge_color)
 
-        self.compound_db_id_cache: List[QGraphicsItem] = []
-        self.compound_db_line_cache: List[QGraphicsItem] = []
-        self.reaction_db_id_cache: List[QGraphicsItem] = []
-        self.reaction_db_line_cache: List[QGraphicsItem] = []
-        self.item_list = [(self.compound_db_id_cache, self.compound_db_line_cache),
-                          (self.reaction_db_id_cache, self.reaction_db_line_cache)]
         self.focused_item_db_id: Optional[str] = None
         self.focused_item: Optional[QGraphicsItem] = None
+        self.focused_connected_items: List[str] = []
+        self.focused_connected_lines: List[str] = []
+
+        self.view_highlighted = False
 
         self.compounds: Dict[str, List[Compound]] = dict()
         self.reactions: Dict[str, List[Reaction]] = dict()
-        self.line_items: Dict[str, Any] = {}
+        self.line_items: Dict[str, QGraphicsPathItem] = dict()
 
         self.__expanded_views: List[QWidget] = []
 
@@ -130,6 +140,10 @@ class ReactionAndCompoundView(QGraphicsView):
             for item in k:
                 self.scene_object.removeItem(item)
                 self.scene_object.addItem(item)
+
+    def replace_in_compound_list(self, item: Compound):
+        str_id = item.db_representation.id().string()
+        self.compounds[str_id] = [item]
 
     def add_to_compound_list(self, item: Compound):
         str_id = item.db_representation.id().string()
@@ -199,26 +213,14 @@ class ReactionAndCompoundView(QGraphicsView):
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton:
-            if not self.itemAt(self.mapToScene(ev.pos()).toPoint()) and self.focused_item:
+            if not isinstance(self.itemAt(ev.pos()), Compound) and not isinstance(self.itemAt(ev.pos()), Reaction):
                 self.reset_node_focus()
         super().mousePressEvent(ev)
 
     def reset_node_focus(self):
         self.reset_item_colors()
-        n = self.settings.p_layout.indexOf(self.settings.mol_widget)
-        trajectory: Any = utils.MolecularTrajectory()
-        s = utils.AtomCollection()
-        trajectory.elements = s.elements
-        trajectory.push_back(s.positions)
-        new_widget = MoleculeVideo(
-            parent=self,
-            trajectory=trajectory,
-            mol_widget=self.settings.mol_widget_cache
-        )
-        self.settings.update_molecule_widget(new_widget)
-        self.settings.es_mep_widget.update_canvas()
-        self.settings.p_layout.insertWidget(n, new_widget)
-        self.settings.p_layout.update()
+        # NOTE: Guess this is somewhat causing the weird blink
+        self.settings.es_mep_widget.clear_canvas()
 
     def keyPressEvent(self, event):
         if (event.type() == QEvent.KeyPress and event == QKeySequence.Copy):
@@ -233,63 +235,90 @@ class ReactionAndCompoundView(QGraphicsView):
             clipboard.setText(text)
 
     def reset_item_colors(self):
-        for i, tup in enumerate(self.item_list):
-            pen = self.compound_pen if i == 0 else self.reaction_pen
-            for reaction_or_compound in tup[0]:
-                reaction_or_compound.setPen(pen)
-                reaction_or_compound.reset_brush()
-            for line in tup[1]:
-                line.setPen(self.path_pen)
-            tup[0].clear()
-            tup[1].clear()
+        # # # Reset all compounds
+        for c_list in self.compounds.values():
+            for entry in c_list:
+                entry.reset_brush()
+        # # # Reset all reactions
+        for r_list in self.reactions.values():
+            for entry in r_list:
+                entry.reset_brush()
+        # # # Reset all lines
+        for line in self.line_items.values():
+            line.setPen(self.path_pen)
 
-    def set_brush_pen_for_all_identical_items(self, str_id: str, is_compound: bool):
-        if is_compound:
-            id_list = self.reaction_db_id_cache
-            line_list = self.reaction_db_line_cache
-            item_list = self.compounds
-        else:
-            id_list = self.compound_db_id_cache
-            line_list = self.compound_db_line_cache
-            item_list = self.reactions
-        for item in item_list[str_id]:
-            item.setPen(self.hover_pen)
-            item.setBrush(self.hover_brush)
-            id_list.append(item)
-            if self.focused_item_db_id is not None:
-                for k in self.line_items.keys():
-                    if self.focused_item_db_id in k:
-                        self.line_items[k].setPen(self.hover_pen)
-                        line_list.append(self.line_items[k])
-            item.update()
+        self.view_highlighted = False
+
+    # NOTE: Ideally, this should be derived from the subgraph of a centroid; would require the cache to be attribute of
+    # this class.
+    def set_brush_pen_for_connected_items(self, str_id: str):
+        # # # Derive connected items and lines, would be better with graph
+        self.focused_connected_items = [str_id]
+        self.focused_connected_lines = []
+        for edge_key in self.line_items.keys():
+            if str_id in edge_key:
+                self.focused_connected_items += [c_item[0:24] for c_item in edge_key.split("_")[0:2]
+                                                 if str_id != c_item[0:24]]
+                self.focused_connected_lines.append(edge_key)
+
+        for item_key in self.compounds.keys():
+            if item_key in self.focused_connected_items:
+                self.scene_object.removeItem(self.compounds[item_key][0])
+                self.scene_object.addItem(self.compounds[item_key][0])
+                continue
+            else:
+                entry = self.compounds[item_key]
+                for item in entry:
+                    item.set_current_brush(self.gray_out_color)
+                    item.set_current_pen(self.gray_border_pen)
+
+        for item_key in self.reactions.keys():
+            if item_key in self.focused_connected_items:
+                self.scene_object.removeItem(self.reactions[item_key][0])
+                self.scene_object.addItem(self.reactions[item_key][0])
+                continue
+            else:
+                entry = self.reactions[item_key]
+                for item in entry:
+                    item.set_current_brush(self.gray_out_color)
+                    item.set_current_pen(self.gray_border_pen)
+
+        for line_key in self.line_items.keys():
+            if line_key in self.focused_connected_lines:
+                continue
+            else:
+                self.line_items[line_key].setPen(self.gray_out_pen)
+
+        self.view_highlighted = True
 
     def set_hover(self, item: QGraphicsItem) -> None:
         item_db_id_h = item.db_representation.id().string()
         item.setPen(self.hover_pen)
         item.setBrush(self.hover_brush)
+
         for k in self.line_items.keys():
             if item_db_id_h in k:
                 self.line_items[k].setPen(self.hover_pen)
-        item.update()
 
     def reset_hover(self, item: QGraphicsItem) -> None:
         item_db_id = item.db_representation.id().string()
-
-        if isinstance(item, Compound):
-            item.setPen(self.compound_pen)
-            item.reset_brush()
+        # # # Choose correct brush during hover
+        if self.view_highlighted and item_db_id not in self.focused_connected_items:
+            line_pen = self.gray_out_pen
+            border_pen = self.gray_border_pen
+            item.set_current_brush(self.gray_out_color)
+            item.set_current_pen(self.gray_border_pen)
         else:
-            item.setPen(self.reaction_pen)
+            line_pen = self.path_pen
+            border_pen = self.compound_pen if isinstance(item, Compound) else self.reaction_pen
             item.reset_brush()
 
+        if item_db_id == self.focused_item_db_id:
+            border_pen = self.hover_pen
+        item.set_current_pen(border_pen)
         for k in self.line_items.keys():
-            if self.focused_item_db_id is not None:
-                if item_db_id in k and self.focused_item_db_id not in k:
-                    self.line_items[k].setPen(self.path_pen)
-            else:
-                if item_db_id in k:
-                    self.line_items[k].setPen(self.path_pen)
-        item.update()
+            if item_db_id in k:
+                self.line_items[k].setPen(line_pen)
 
     def mouse_press_function(self, _, item: QGraphicsItem) -> None:
         if not self.settings:
@@ -301,66 +330,81 @@ class ReactionAndCompoundView(QGraphicsView):
         trajectory: Any = utils.MolecularTrajectory()
 
         mol_widget = self.settings.mol_widget_cache
-        n = self.settings.p_layout.indexOf(self.settings.mol_widget)
+        mol_index = self.settings.p_layout.indexOf(self.settings.mol_widget)
+        charge = None
+        mult = None
         if isinstance(item, Reaction):
             if item.spline is not None:
                 trajectory = self.__spline_to_trajectory(item.spline)
+                # invert trajectory if required
+                if item.invert_direction:
+                    trajectory = trajectory[::-1]
+                # TODO: Avoid database call here!
+                step = db.ElementaryStep(item.assigned_es_id, self._elementary_step_collection)
+                ts = db.Structure(step.get_transition_state(), self._structure_collection)
+                charge = ts.get_charge()
+                mult = ts.get_multiplicity()
             else:
                 # barrierless reaction currently no trajectory info and no static structure to display
                 s = utils.AtomCollection()
-                if item.structure is not None:
-                    s = item.structure
                 trajectory.elements = s.elements
                 trajectory.push_back(s.positions)
-            new_widget = MoleculeVideo(parent=self, trajectory=trajectory, mol_widget=mol_widget)
-            self.settings.update_molecule_widget(new_widget)
-            self.settings.es_mep_widget.update_canvas(item.spline, item.get_energy_difference())
-            self.reset_item_colors()
 
-            # color selection
-            self.set_brush_pen_for_all_identical_items(item.db_representation.id().string(), False)
+            new_widget = MoleculeVideo(parent=self, trajectory=trajectory, mol_widget=mol_widget)
+            self.settings.es_mep_widget.update_canvas(item.spline,
+                                                      item.barriers,
+                                                      new_widget.changed_frame,
+                                                      item.invert_direction,
+                                                      not item.barrierless_type)
 
         elif isinstance(item, Compound):
             # update widget
-            if item.structure is not None:
-                trajectory.elements = item.structure.elements
-                trajectory.push_back(item.structure.positions)
+            # get PES info
+            centroid = db.Structure(item.db_representation.get_centroid(), self._structure_collection)
+            charge = centroid.get_charge()
+            mult = centroid.get_multiplicity()
+            # get atoms
+            centroid_atoms = centroid.get_atoms()
+            trajectory.elements = centroid_atoms.elements
+            trajectory.push_back(centroid_atoms.positions)
+            self.settings.es_mep_widget.clear_canvas()
             new_widget = MoleculeVideo(parent=self, trajectory=trajectory, mol_widget=mol_widget)
-            self.settings.update_molecule_widget(new_widget)
-            self.settings.es_mep_widget.update_canvas()
-            self.reset_item_colors()
 
-            # color selection
-            self.set_brush_pen_for_all_identical_items(item.db_representation.id().string(), True)
+        # Construct widget
+        self.reset_item_colors()
+        self.set_brush_pen_for_connected_items(item.db_representation.id().string())
+        self.settings.update_molecule_widget(new_widget)
+        # # # Highlight outline of focused item
+        self.focused_item.setPen(self.hover_pen)
 
-        # set new widget
-        self.settings.p_layout.insertWidget(n, new_widget)
-        self.settings.p_layout.update()
+        # # # Insert mol_widget at correct position of layout
+        self.settings.p_layout.insertWidget(mol_index, new_widget)
+
+        if charge is not None and mult is not None:
+            new_widget.setToolTip(f"Charge {charge}; Multiplicity {mult}")
 
     def hover_enter_function(self, _, item: QGraphicsItem) -> None:
         item_db_id_h = item.db_representation.id().string()
-        if item_db_id_h != self.focused_item_db_id:
-            if isinstance(item, Compound):
-                if item_db_id_h in self.compounds:
-                    for same_item in self.compounds[item_db_id_h]:
-                        self.set_hover(same_item)
-            else:
-                if item_db_id_h in self.reactions:
-                    for same_item in self.reactions[item_db_id_h]:
-                        self.set_hover(same_item)
+        if isinstance(item, Compound):
+            if item_db_id_h in self.compounds:
+                for same_item in self.compounds[item_db_id_h]:
+                    self.set_hover(same_item)
+        else:
+            if item_db_id_h in self.reactions:
+                for same_item in self.reactions[item_db_id_h]:
+                    self.set_hover(same_item)
 
     def hover_leave_function(self, _, item: QGraphicsItem) -> None:
         item_db_id = item.db_representation.id().string()
 
-        if item_db_id != self.focused_item_db_id:
-            if isinstance(item, Compound):
-                if item_db_id in self.compounds:
-                    for same_item in self.compounds[item_db_id]:
-                        self.reset_hover(same_item)
-            else:
-                if item_db_id in self.reactions:
-                    for same_item in self.reactions[item_db_id]:
-                        self.reset_hover(same_item)
+        if isinstance(item, Compound):
+            if item_db_id in self.compounds:
+                for same_item in self.compounds[item_db_id]:
+                    self.reset_hover(same_item)
+        else:
+            if item_db_id in self.reactions:
+                for same_item in self.reactions[item_db_id]:
+                    self.reset_hover(same_item)
 
     def menu_function(self, event, item: QGraphicsItem) -> None:
         menu = QMenu()
@@ -369,6 +413,8 @@ class ReactionAndCompoundView(QGraphicsView):
         if isinstance(item, Compound):
             copy_masm_graph_action = menu.addAction('Copy Molassembler Graph')
             move_action = menu.addAction('Move to Molecular Viewer')
+            activate_action = menu.addAction('Activate compound for exploration')
+            deactivate_action = menu.addAction('Deactivate compound for exploration')
         if isinstance(item, Reaction):
             has_ts = bool(item.spline is not None)
             if has_ts:
@@ -386,6 +432,10 @@ class ReactionAndCompoundView(QGraphicsView):
                 copy_text_to_clipboard(current_graph)
             elif action == move_action:
                 self.__move_structure_to_main_viewer(item)
+            elif action == activate_action:
+                item.db_representation.enable_exploration()
+            elif action == deactivate_action:
+                item.db_representation.disable_exploration()
         elif isinstance(item, Reaction):
             if has_ts:
                 if action == move_ts_action:
@@ -394,25 +444,30 @@ class ReactionAndCompoundView(QGraphicsView):
     def __expand_in_new_window(self, item: QGraphicsItem):
         if isinstance(item, Compound):
             from scine_heron.database.expand_widget import ExpandCompound
-            selected_compound = item.db_representation
-            # from str to dict transformation
-            selected_compound_dict = json.loads(f"{selected_compound}")
+            selected_compound_dict = json.loads(item.db_representation.json())
             self.__expanded_views.append(ExpandCompound(None, self.db_manager, selected_compound_dict))
             self.__expanded_views[-1].setWindowTitle("Unique Conformers in Aggregate")
             self.__expanded_views[-1].show()
         elif isinstance(item, Reaction):
             from scine_heron.database.expand_widget import ExpandReaction
-            selected_reaction = item.db_representation
-            selected_reaction_dict = json.loads(f"{selected_reaction}")
+            selected_reaction_dict = json.loads(item.db_representation.json())
             self.__expanded_views.append(ExpandReaction(None, self.db_manager, selected_reaction_dict))
-            self.__expanded_views[-1].setWindowTitle("Unique Conformers in Aggregate")
+            self.__expanded_views[-1].setWindowTitle("Elementary steps in Reaction")
             self.__expanded_views[-1].show()
 
     def __move_structure_to_main_viewer(self, item: QGraphicsItem):
         from scine_heron import get_core_tab
         tab = get_core_tab('molecule_viewer')
         if tab is not None:
-            tab.update_molecule(atoms=item.structure)
+            if isinstance(item, Compound):
+                db_compound = item.db_representation
+                tmp_structure = db.Structure(db_compound.get_centroid(), self._structure_collection)
+                tab.update_molecule(atoms=tmp_structure.get_atoms())
+            elif isinstance(item, Reaction):
+                db_es = db.ElementaryStep(item.assigned_es_id, self._elementary_step_collection)
+                if db_es.has_transition_state():
+                    tmp_structure = db.Structure(db_es.get_transition_state(), self._structure_collection)
+                    tab.update_molecule(atoms=tmp_structure.get_atoms())
 
     def __get_id_of_current_item(self, item: QGraphicsItem):
         if isinstance(item, Compound) or isinstance(item, Reaction):
@@ -430,3 +485,33 @@ class ReactionAndCompoundView(QGraphicsView):
             return masm_graph
         else:
             return "No graph available"
+
+    def _get_elementary_step_of_reaction_from_db(self,
+                                                 reaction: db.Reaction,
+                                                 energy_model: db.Model,
+                                                 structure_model: Union[None, db.Model] = None
+                                                 ) -> Tuple[Union[db.ElementaryStep, None],
+                                                            Union[Tuple[float, float], Tuple[None, None]]]:
+        # NOTE: Only electronic energies for now
+        elementary_step = None
+        elementary_step = get_elementary_step_with_min_ts_energy(
+            reaction,
+            "electronic_energy",
+            energy_model,
+            self._elementary_step_collection,
+            self._structure_collection,
+            self._property_collection,
+            max_barrier=np.inf,
+            min_barrier=- np.inf,
+            structure_model=structure_model
+        )
+        e_type = "electronic_energy"
+
+        # Only query for barrier if es is not None
+        if elementary_step is not None:
+            barriers = get_barriers_for_elementary_step_by_type(elementary_step, e_type, energy_model,
+                                                                self._structure_collection, self._property_collection)
+        else:
+            barriers = (None, None)
+
+        return elementary_step, barriers

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -19,16 +19,12 @@ from scine_heron.electronic_data.electronic_data_status_manager import (
 from scine_heron.settings.settings_status_manager import SettingsStatusManager
 from scine_heron.molecule.create_molecule_animator import create_molecule_animator
 from scine_heron.molecule.animator import Animator
-from typing import Optional, List, TYPE_CHECKING, Any
+from typing import Optional, List
 import pytest
 from vtk import vtkMolecule
 # TODO Disabled as long as test_updates_molecule is disabled
 # from PySide2.QtWidgets import QApplication
 # from PySide2.QtCore import QEventLoop
-if TYPE_CHECKING:
-    Signal = Any
-else:
-    from PySide2.QtCore import Signal
 
 
 @pytest.fixture(name="animator")  # type: ignore[misc]
@@ -41,6 +37,7 @@ def create_animator(molecule: vtkMolecule) -> Animator:
     energy_status_manager = EnergyProfileStatusManager()
     charge_status_manager = StatusManager[Optional[List[float]]](None)
     electronic_data_status_manager = ElectronicDataStatusManager()
+    force_status_manager = StatusManager[Optional[List[float]]](None)
 
     return create_molecule_animator(
         0,
@@ -50,7 +47,7 @@ def create_animator(molecule: vtkMolecule) -> Animator:
         energy_status_manager,
         electronic_data_status_manager,
         charge_status_manager,
-        Signal(),
+        force_status_manager,
     )
 
 # TODO this test does not work without a haptic device

@@ -119,9 +119,9 @@ double HapticDeviceManager::calculateElevation(const hduVector3Dd& position, con
 double HapticDeviceManager::calculateZoom(const hduVector3Dd& position, const hduVector3Dd& last_position) {
     // calculate zoom using real haptic coordinates
     if (last_position[2] - position[2] <= -1.2) {
-        return 0.90;  // zoom out
+        return 1.10;  // zoom out
     } else if (last_position[2] - position[2] >= 1.2) {
-        return 1.10; // zoom on
+        return 0.90; // zoom on
     } else {
         return 1; // do nothing
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -30,7 +30,7 @@ def test_value_can_be_read(manager: SettingsStatusManager) -> None:
     assert manager.molecule_style == MoleculeStyle.BallAndStick
     assert manager.labels_style == LabelsStyle.Empty
     assert manager.molecular_orbital_value == 0.05
-    assert manager.get_calculator_settings()
+    assert manager.get_calculator_settings() == {}
 
 
 def test_value_can_be_set(manager: SettingsStatusManager) -> None:
@@ -49,13 +49,6 @@ def test_value_can_be_set(manager: SettingsStatusManager) -> None:
     assert manager.molecular_orbital_value == 0.05
     assert manager.number_of_molecular_orbital == 10
     assert manager.selected_molecular_orbital == 1
-
-    manager.molecular_charge = 0
-    manager.spin_multiplicity = 1
-    manager.spin_mode = "unrestricted"
-    assert manager.molecular_charge == 0
-    assert manager.spin_multiplicity == 1
-    assert manager.spin_mode == "unrestricted"
 
 
 def test_setting_value_notifies(manager: SettingsStatusManager) -> None:
@@ -86,15 +79,6 @@ def test_setting_value_notifies(manager: SettingsStatusManager) -> None:
 
     assert result == 3
 
-    manager.molecular_charge_changed.connect(increase)
-    manager.spin_multiplicity_changed.connect(increase)
-    manager.spin_mode_changed.connect(increase)
-    manager.molecular_charge = 1
-    manager.spin_multiplicity = 3
-    manager.spin_mode = "restricted"
-
-    assert result == 6
-
 
 def test_setting_value_does_not_notify_if_same_value(
     manager: SettingsStatusManager,
@@ -123,17 +107,5 @@ def test_setting_value_does_not_notify_if_same_value(
 
     manager.error_update.connect(increase)
     manager.error_message = ""
-
-    assert result == 0
-
-    manager.molecular_charge = 0
-    manager.spin_multiplicity = 1
-    manager.spin_mode = "unrestricted"
-    manager.molecular_charge_changed.connect(increase)
-    manager.spin_multiplicity_changed.connect(increase)
-    manager.spin_mode_changed.connect(increase)
-    manager.molecular_charge = 0
-    manager.spin_multiplicity = 1
-    manager.spin_mode = "unrestricted"
 
     assert result == 0

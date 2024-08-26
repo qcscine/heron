@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 """
@@ -10,7 +10,7 @@ Provides the MouseInteractorStyle class.
 
 from uuid import uuid1
 from enum import Enum, auto
-from typing import cast, Any, Optional, Callable, Dict, Tuple, Set
+from typing import cast, Any, Optional, Callable, Dict, Tuple, Set, List
 
 from vtk import (
     vtkActor,
@@ -19,13 +19,16 @@ from vtk import (
     vtkMolecule,
     vtkMoleculeMapper,
     vtkHardwareSelector,
-    vtkTransform,
     vtkInteractorStyleTrackballCamera,
 )
+
+import scine_utilities as su
+
 from scine_heron.electronic_data.electronic_data_status_manager import (
     ElectronicDataStatusManager,
 )
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+from scine_heron.molecule.utils.molecule_utils import molecule_to_atom_collection
 from scine_heron.settings.settings_status_manager import SettingsStatusManager
 
 
@@ -33,7 +36,7 @@ class InteractionMode(Enum):
     NO_INTERACTION = auto()
     ROTATE_CAMERA = auto()
     MOVE_CAMERA = auto()
-    MOVE_ATOM = auto()
+    MOVE_ATOMS = auto()
 
 
 class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[misc]
@@ -48,7 +51,7 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
         renderer: vtkRenderer,
         mapper: vtkMoleculeMapper,
         actors_dict: Dict[str, vtkActor],
-        selected_atom_callback: Callable[[Optional[int]], None],
+        selected_atom_callback: Callable[[Optional[List[int]]], None],
     ):
         vtkInteractorStyleTrackballCamera.__init__(self)
 
@@ -73,16 +76,16 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
 
     @staticmethod
     def _interaction_mode(
-        pressed_buttons: Set[str], selected_atom_id: Optional[int]
+        pressed_buttons: Set[str], selected_atom_ids: Optional[List[int]]
     ) -> InteractionMode:
         if "left_mouse" in pressed_buttons and " " not in pressed_buttons:
             mode = InteractionMode.ROTATE_CAMERA
         elif "left_mouse" in pressed_buttons and " " in pressed_buttons:
             mode = InteractionMode.MOVE_CAMERA
-        elif "right_mouse" in pressed_buttons and selected_atom_id is not None:
-            mode = InteractionMode.MOVE_ATOM
-        elif "right_haptic" in pressed_buttons and selected_atom_id is not None:
-            mode = InteractionMode.MOVE_ATOM
+        elif "right_mouse" in pressed_buttons and selected_atom_ids:
+            mode = InteractionMode.MOVE_ATOMS
+        elif "right_haptic" in pressed_buttons and selected_atom_ids:
+            mode = InteractionMode.MOVE_ATOMS
         else:
             mode = InteractionMode.NO_INTERACTION
 
@@ -125,47 +128,54 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
             "MouseWheelBackwardEvent", self._handle_mouse_wheel_backward, priority
         )
 
-    def _handle_mouse_wheel_forward(self, _1: Any = None, _2: Any = None) -> None:
+    def _handle_mouse_wheel_forward(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         self.OnMouseWheelForward()
         self._render()
 
-    def _handle_mouse_wheel_backward(self, _1: Any = None, _2: Any = None) -> None:
+    def _handle_mouse_wheel_backward(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         self.OnMouseWheelBackward()
         self._render()
 
-    def _handle_left_button_press(self, _1: Any = None, _2: Any = None) -> None:
+    def _handle_left_button_press(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
         Activates "rotation mode".
         """
         self._pressed_buttons.add("left_mouse")
 
-    def _handle_left_button_release(self, _1: Any = None, _2: Any = None) -> None:
+    def _handle_left_button_release(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
         Deactivates "rotation mode".
         """
         self._pressed_buttons.remove("left_mouse")
 
-    def __handle_right_button_press(self, _1: Any = None, _2: Any = None) -> None:
+    def __handle_right_button_press(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
-        Sets the member mouse_picked_atom_id to the picked atom.
+        Sets the member mouse_picked_atom_ids to the picked atoms.
         """
         self._pressed_buttons.add("right_mouse")
-        self._settings_status_manager.mouse_picked_atom_id = self.__picked_atom()
-        self._selected_atom_callback(self._settings_status_manager.mouse_picked_atom_id)
+        self._settings_status_manager.mouse_picked_atom_ids = self.__picked_atoms(
+            self._settings_status_manager.mouse_picked_atom_ids)
+        self._selected_atom_callback(self._settings_status_manager.mouse_picked_atom_ids)
 
-    def __handle_right_button_release(self, _1: Any = None, _2: Any = None) -> None:
+    def __handle_right_button_release(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
-        Resets the member mouse_picked_atom_id to None.
+        Resets the member mouse_picked_atom_ids to None.
         """
+        self.__key_press()
         self._pressed_buttons.remove("right_mouse")
-        self._settings_status_manager.mouse_picked_atom_id = None
+        if (
+            self._settings_status_manager.mouse_picked_atom_ids
+            and len(self._settings_status_manager.mouse_picked_atom_ids) == 1
+            and "s" not in self._pressed_buttons
+        ):
+            self._settings_status_manager.mouse_picked_atom_ids = []
 
     def __handle_mouse_move(self, _1: Any, _2: Any) -> None:
         """
-        Moves the picked atom to the location defined by the mouse position.
+        Moves the picked atoms to the location defined by the mouse position.
         """
         interaction_mode = self._interaction_mode(
-            self._pressed_buttons, self._settings_status_manager.mouse_picked_atom_id
+            self._pressed_buttons, self._settings_status_manager.mouse_picked_atom_ids
         )
 
         last_xy_pos = self.GetInteractor().GetLastEventPosition()
@@ -176,11 +186,11 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
             self._render()
         elif interaction_mode == InteractionMode.MOVE_CAMERA:
             self._move_camera(self.__calculate_motion_vector(last_xy_pos, xy_pos))
-        elif interaction_mode == InteractionMode.MOVE_ATOM:
+        elif interaction_mode == InteractionMode.MOVE_ATOMS:
             self._settings_status_manager.selected_molecular_orbital = None
             self._settings_status_manager.number_of_molecular_orbital = None
 
-            self._move_atom_by_mouse()
+            self._move_atoms_by_mouse()
             self._render()
         else:
             self.OnMouseMove()
@@ -218,35 +228,42 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
 
     def _rotate_camera(self, azimuth: Any, elevation: Any) -> None:
         camera = self._renderer.GetActiveCamera()
-        view_up = camera.GetViewUp()
-        axis = [
-            -camera.GetViewTransformMatrix().GetElement(0, 0),
-            -camera.GetViewTransformMatrix().GetElement(0, 1),
-            -camera.GetViewTransformMatrix().GetElement(0, 2),
-        ]
+        atoms = molecule_to_atom_collection(self._molecule)
+        com = su.geometry.get_center_of_mass(atoms) * su.ANGSTROM_PER_BOHR
+        camera.SetFocalPoint(com)
+        camera.OrthogonalizeViewUp()
+        camera.Azimuth(azimuth)
+        camera.Elevation(elevation)
 
-        rotate_transform = vtkTransform()
-
-        # azimuth
-        rotate_transform.Identity()
-        rotate_transform.RotateWXYZ(azimuth, view_up)
-
-        # elevation
-        rotate_transform.RotateWXYZ(elevation, axis)
-        rotate_transform.Update()
-
-        camera.ApplyTransform(rotate_transform)
-
-    def _move_atom_by_mouse(self) -> None:
+    def _move_atoms_by_mouse(self) -> None:
         # get atom position
-        atom = self._molecule.GetAtom(self._settings_status_manager.mouse_picked_atom_id)
+        if self._settings_status_manager.mouse_picked_atom_ids:
+            for atom_id in self._settings_status_manager.mouse_picked_atom_ids:
+                atom = self._molecule.GetAtom(atom_id)
+                from_view = self.__world_to_view(atom.GetPosition())
 
-        # get mouse position and convert it to view coordinates
-        to_view = self.__display_to_view(self.GetInteractor().GetEventPosition())
-        from_view = self.__world_to_view(atom.GetPosition())
-        to_world = self.__view_to_world((to_view[0], to_view[1], from_view[2]))
+            for this in self._settings_status_manager.mouse_picked_atom_ids:
+                atom = self._molecule.GetAtom(this)
+                # get mouse position and convert it to view coordinates
+                to_view = self.__display_to_view(self.GetInteractor().GetEventPosition())
+                from_view = self.__world_to_view(atom.GetPosition())
+                to_world = self.__view_to_world((to_view[0], to_view[1], from_view[2]))
+                atom.SetPosition(to_world[0], to_world[1], to_world[2])
 
-        atom.SetPosition(to_world[0], to_world[1], to_world[2])
+                for other in self._settings_status_manager.mouse_picked_atom_ids:
+                    if other is not this:
+                        otherAtom = self._molecule.GetAtom(other)
+                        from_view_other = self.__world_to_view(otherAtom.GetPosition())
+                        dx = (from_view_other[0] - from_view[0])
+                        dy = (from_view_other[1] - from_view[1])
+                        to_world_other = self.__view_to_world((to_view[0] + dx, to_view[1] + dy, from_view_other[2]))
+                        otherAtom.SetPosition(to_world_other[0], to_world_other[1], to_world_other[2])
+
+            # break bonds without running calculation
+            bonds = self._molecule.GetNumberOfBonds()
+            for bond in range(bonds):
+                if self._molecule.GetBondLength(bond) > 1.0:
+                    self._molecule.SetBondOrder(bond, 0)
 
     def __display_to_view(
         self, display: Tuple[float, float]
@@ -278,13 +295,13 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
         self._renderer.ViewToWorld()
         return cast(Tuple[float, float, float], self._renderer.GetWorldPoint())
 
-    def __key_press(self, _1: Any = None, _2: Any = None) -> None:
+    def __key_press(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
         Translate camera if the space bar has been pressed.
         """
         self._pressed_buttons.add(self.__interactor.GetKeyCode())
 
-    def __key_release(self, _1: Any = None, _2: Any = None) -> None:
+    def __key_release(self, _1: Optional[Any] = None, _2: Optional[Any] = None) -> None:
         """
         Stop translating camera if the space bar has been released.
         """
@@ -292,46 +309,53 @@ class MouseInteractorStyle(vtkInteractorStyleTrackballCamera):  # type: ignore[m
         if key in self._pressed_buttons:
             self._pressed_buttons.remove(self.__interactor.GetKeyCode())
 
-    def __picked_atom(self) -> Optional[int]:
+    def __picked_atoms(self, picked_atoms_list: Optional[List[int]]) -> Optional[List[int]]:
         """
-        Uses the event position to return the picked atom or None.
+        Uses the event position to return the picked atoms or None.
         """
+        from scine_heron.molecular_viewer import get_mol_viewer_tab
+        self.__key_press()
+        mol_tab = get_mol_viewer_tab(want_atoms_there=True)
+
+        if not picked_atoms_list:
+            picked_atoms_list = []
+
         selector = vtkHardwareSelector()
         selector.SetRenderer(self._renderer)
         position = self.GetInteractor().GetEventPosition()
 
         selector.SetArea(position[0], position[1], position[0], position[1])
 
-        # temporarily remove all actors (except the molecule) for picking
-        removed_actors2D = []
-        removed_actors3D = []
-        try:
-            actors2D = [a for a in self._renderer.GetActors2D()]
-            for actor in actors2D:
-                self._renderer.RemoveActor(actor)
-                removed_actors2D.append(actor)
-            actors3D_to_remove = [
-                a
-                for a in self._renderer.GetActors()
-                if a != self.__actors_dict["molecule"]
-            ]
-            for actor in actors3D_to_remove:
-                self._renderer.RemoveActor(actor)
-                removed_actors3D.append(actor)
-
-            selection = selector.Select()
-
-        finally:
-            for actor in removed_actors2D:
-                self._renderer.AddActor2D(actor)
-            for actor in removed_actors3D:
-                self._renderer.AddActor(actor)
-
-        ids = vtkIdTypeArray()
+        # before we retrieve the selection, we hide all actors but the molecule actor
+        # this allows the selector to correctly select the atom that was picked
+        # removing the actors caused problems with multiple active selections, but hiding looks to be fine
+        actors_2d = [a for a in self._renderer.GetActors2D()]
+        actors_3d = [a for a in self._renderer.GetActors()
+                     if a != self.__actors_dict["molecule"]]
+        all_actors = actors_2d + actors_3d
+        for actor in all_actors:
+            actor.SetVisibility(False)
+        selection = selector.Select()
+        for actor in all_actors:
+            actor.SetVisibility(True)
+        ids = vtkIdTypeArray()  # ids are written into here from mapper
         self.__mapper.GetSelectedAtoms(selection, ids)
-        if ids.GetSize() > 0:
-            return int(ids.GetValue(0))
-        return None
+
+        if ids.GetSize() > 0 and int(ids.GetValue(0)) not in picked_atoms_list:
+            if "s" in self._pressed_buttons:
+                picked_atoms_list.append(int(ids.GetValue(0)))
+            else:
+                picked_atoms_list = [int(ids.GetValue(0))]
+        elif (
+            ids.GetSize() > 0
+            and int(ids.GetValue(0)) in picked_atoms_list
+            and "s" in self._pressed_buttons
+            and len(picked_atoms_list) > 1
+        ):
+            picked_atoms_list.remove(int(ids.GetValue(0)))
+        if mol_tab and mol_tab.mol_widget:
+            mol_tab.mol_widget.set_selection(picked_atoms_list)
+        return picked_atoms_list
 
     def _render(self) -> None:
         """
